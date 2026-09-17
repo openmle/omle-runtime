@@ -1,0 +1,65 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# debug information files
+*.dwo
+
+/build
+/protobuf
+/registries
+/**/*.pyc
+
+/.idea
+/.vscode
+/.cache
+/java/target
+/spark/.bsp
+/spark/target
+/spark/project/target
+/spark/python/build
+/out
+*.egg-info/
+/**/.DS_Store
+/build_*
+/build-*
+/benchmark/models
+/benchmark/results
+
+**/catboost_info
+/spark/python/omle/_version.py
