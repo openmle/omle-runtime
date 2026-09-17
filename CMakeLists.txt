@@ -188,13 +188,20 @@ endforeach()
 # Everything lands in python/omleruntime/ because that is where the Python
 # package expects it and where the JVM bindings point JNA. ARCHIVE matters on
 # Windows: it is where the DLL's import library goes.
+#
+# The trailing `$<0:>` is load-bearing. Multi-config generators (Visual Studio,
+# Xcode) append a per-configuration subdirectory to a plain *_OUTPUT_DIRECTORY,
+# so the DLL would land in python/omleruntime/Release/ and neither the Python
+# package nor JNA would find it. An output directory containing a generator
+# expression suppresses that append; `$<0:>` expands to nothing, so the path is
+# unchanged everywhere else.
 set_target_properties(omle_runtime PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   OUTPUT_NAME "omleruntime"
   WINDOWS_EXPORT_ALL_SYMBOLS ON
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime"
-  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime"
-  ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime")
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime/$<0:>"
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime/$<0:>"
+  ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime/$<0:>")
 
 # -----------------------------------------------------------------------
 # Executables

@@ -36,19 +36,63 @@ Quick start::
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Dict, List, Union
 
 import numpy as np
 
+
+# ---------------------------------------------------------------------------
+# Windows DLL search path
+# ---------------------------------------------------------------------------
+# omle_ext.pyd links omleruntime.dll, which in turn links libprotobuf and
+# Abseil. Since Python 3.8 an extension module's dependent DLLs are resolved
+# against the system directories, the directory holding the .pyd, and whatever
+# os.add_dll_directory() has registered — PATH is deliberately not consulted.
+# omleruntime.dll sits next to the .pyd so it resolves on its own, but protobuf
+# and Abseil usually live in a conda or vcpkg prefix that is only on PATH, and
+# without this the import fails with a bare "DLL load failed".
+#
+# The cookies returned by add_dll_directory() unregister the directory when
+# closed, so they are parked in a module-level list to keep them alive.
+_dll_directories = []
+
+if sys.platform == "win32":
+    _candidates = [os.path.dirname(os.path.abspath(__file__))]
+    # An explicit override comes first; it is the only knob available when the
+    # dependencies live somewhere PATH does not mention.
+    _candidates += os.environ.get("OMLE_RUNTIME_DLL_PATH", "").split(os.pathsep)
+    _candidates += os.environ.get("PATH", "").split(os.pathsep)
+
+    _seen = set()
+    for _d in _candidates:
+        if not _d:
+            continue
+        try:
+            _key = os.path.normcase(os.path.abspath(_d))
+            if _key in _seen or not os.path.isdir(_key):
+                continue
+            _seen.add(_key)
+            _dll_directories.append(os.add_dll_directory(_key))
+        except OSError:
+            # An unreadable or malformed PATH entry is not worth failing over.
+            continue
+
 # pybind11 extension — required
 try:
     from omleruntime import omle_ext as _ext
 except ImportError as _e:
     raise ImportError(
-        "omleruntime: pybind11 extension 'omle_ext' not found.\n"
-        "Build with:  cmake -DBUILD_PYTHON=ON .. && make omle_ext"
+        "omleruntime: could not import the pybind11 extension 'omle_ext'.\n"
+        f"Underlying error: {_e}\n"
+        "If the module is missing, build it with:\n"
+        "    cmake -DBUILD_PYTHON=ON .. && cmake --build . --target omle_ext\n"
+        "If it was found but failed to load, a dependent shared library "
+        "(omleruntime, protobuf, Abseil) is not on the loader's search path; "
+        "on Windows point OMLE_RUNTIME_DLL_PATH at the directory holding them."
     ) from _e
 
 

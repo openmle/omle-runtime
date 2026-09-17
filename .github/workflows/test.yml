@@ -175,6 +175,12 @@ jobs:
           # does not. libprotobuf.dll and the Abseil DLLs have to be findable at
           # run time by ctest, by the Python extension and by JNA, so put the
           # conda bin directory on PATH for every later step in this job.
+          #
+          # PATH alone is enough for the executables ctest runs, but not for the
+          # Python extension: since 3.8 CPython resolves an extension module's
+          # dependent DLLs without consulting PATH. omleruntime/__init__.py
+          # re-registers these entries with os.add_dll_directory() before
+          # importing omle_ext, which is what makes this line work there.
           echo "${{ github.workspace }}/conda-deps/Library/bin" >> "$GITHUB_PATH"
 
       - name: Install test dependencies
@@ -202,6 +208,33 @@ jobs:
             -Dpybind11_DIR="$(python -c 'import pybind11; print(pybind11.get_cmake_dir())')" \
             -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" $EXTRA
           cmake --build build --config Release --target omle_ext -j 4
+
+      - name: Check the native library landed where consumers look
+        shell: bash
+        # Both the Python package and JNA load the library from
+        # python/omleruntime/ by that exact literal path, and nothing in the
+        # build enforces it. When a multi-config generator last slipped a
+        # per-config subdirectory in between, the build stayed green and the
+        # failure surfaced two steps later as a 200-line UnsatisfiedLinkError
+        # listing the JVM's whole resource path. One line here instead.
+        run: |
+          case "$RUNNER_OS" in
+            Windows) LIB=omleruntime.dll ;;
+            macOS)   LIB=libomleruntime.dylib ;;
+            *)       LIB=libomleruntime.so ;;
+          esac
+          if [ ! -f "python/omleruntime/$LIB" ]; then
+            echo "::error::python/omleruntime/$LIB is missing. Built artifacts:"
+            find python/omleruntime -name '*omleruntime*' -o -name 'omle_ext*'
+            exit 1
+          fi
+          # The .pyd/.so name is interpreter- and platform-specific, so match
+          # the prefix that `from omleruntime import omle_ext` resolves.
+          if ! ls python/omleruntime/omle_ext* >/dev/null 2>&1; then
+            echo "::error::no omle_ext extension module in python/omleruntime/"
+            find python/omleruntime -name 'omle_ext*'
+            exit 1
+          fi
 
       - name: Test
         working-directory: omle-runtime/python
@@ -288,6 +321,26 @@ jobs:
           fi
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF $EXTRA
           cmake --build build --config Release --target omle_runtime -j 4
+
+      - name: Check the native library landed where consumers look
+        shell: bash
+        # Both the Python package and JNA load the library from
+        # python/omleruntime/ by that exact literal path, and nothing in the
+        # build enforces it. When a multi-config generator last slipped a
+        # per-config subdirectory in between, the build stayed green and the
+        # failure surfaced two steps later as a 200-line UnsatisfiedLinkError
+        # listing the JVM's whole resource path. One line here instead.
+        run: |
+          case "$RUNNER_OS" in
+            Windows) LIB=omleruntime.dll ;;
+            macOS)   LIB=libomleruntime.dylib ;;
+            *)       LIB=libomleruntime.so ;;
+          esac
+          if [ ! -f "python/omleruntime/$LIB" ]; then
+            echo "::error::python/omleruntime/$LIB is missing. Built artifacts:"
+            find python/omleruntime -name '*omleruntime*' -o -name 'omle_ext*'
+            exit 1
+          fi
 
       - name: Test
         working-directory: omle-runtime/java
