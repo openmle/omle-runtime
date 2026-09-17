@@ -244,7 +244,18 @@ jobs:
 
       - name: Check the wheel builds and imports
         shell: bash
+        # scikit-build-core runs its own CMake configure in an isolated build
+        # directory, so the -DCMAKE_PREFIX_PATH given to the in-place build
+        # above does not carry over and cmake.args in pyproject.toml cannot
+        # hardcode a runner path. On Linux and macOS protobuf sits in a default
+        # search path so find_package succeeds regardless; on Windows it exists
+        # only in the conda prefix and has to be pointed at again.
+        # SKBUILD_CMAKE_ARGS is scikit-build-core's env-var channel for that,
+        # and pip forwards the environment into the isolated build.
         run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            export SKBUILD_CMAKE_ARGS="-DCMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/conda-deps/Library"
+          fi
           pip install ./python
           # Run from elsewhere so the source tree cannot satisfy the import.
           cd "$RUNNER_TEMP" && python -c "import omleruntime; print('wheel ok')"
@@ -353,6 +364,10 @@ jobs:
   # 4. Scala — io.github.openmle.spark. sbt reads java/target/omle-runtime.jar
   #    as an unmanaged jar, so Maven has to package before sbt compiles.
   #
+  #    Runs against both cross-built Scala versions, so the 2.12/Spark 3.5 jar
+  #    is covered by the Scala suite and not only indirectly through the
+  #    PySpark job.
+  #
   #    Windows is excluded: Spark needs a HADOOP_HOME with winutils.exe, which
   #    is more CI surface than the binding warrants.
   # ---------------------------------------------------------------------------
@@ -403,22 +418,41 @@ jobs:
       - name: Test
         working-directory: omle-runtime/spark
         shell: bash
+        # `+test` runs the suite once per entry in crossScalaVersions, which is
+        # 2.12/Spark 3.5.3 and 2.13/Spark 4.0.2.
+        #
+        # The session `set` survives the Scala version switches that `+`
+        # performs, and wins over the jna.library.path already in build.sbt
+        # because a later -D of the same key takes precedence.
         run: |
           sbt -batch \
             "set Test/javaOptions += \"-Djna.library.path=$GITHUB_WORKSPACE/omle-runtime/python/omleruntime\"" \
-            test
+            +test
 
   # ---------------------------------------------------------------------------
   # 5. PySpark — omle-spark. Delegates to the Scala transformer, so it needs the
   #    whole chain: libomleruntime, the Java jar, and the packaged Scala jar.
   # ---------------------------------------------------------------------------
   pyspark:
-    name: PySpark (${{ matrix.os }})
+    name: PySpark ${{ matrix.spark.pyspark }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # PyPI ships Spark 3.x built with Scala 2.12 and Spark 4.x with Scala
+        # 2.13, and the two are binary-incompatible, so a PySpark pin also
+        # fixes which cross-built jar the driver can load. Pinning keeps a new
+        # upstream release from changing what this job tested. The Python pin
+        # rides along because PySpark 3.5 predates official Python 3.12
+        # support.
+        spark:
+          - pyspark: "3.5.3"
+            scala: "2.12.18"
+            python: "3.11"
+          - pyspark: "4.0.2"
+            scala: "2.13.14"
+            python: "3.12"
 
     steps:
       - uses: actions/checkout@v4.2.2
@@ -431,7 +465,7 @@ jobs:
 
       - uses: actions/setup-python@v5.6.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.spark.python }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -449,15 +483,25 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf abseil
 
-      - name: Build the native library and both jars
+      - name: Build the native library, the Python extension and both jars
         shell: bash
+        # BUILD_PYTHON is on because the native-match tests compare the Spark
+        # transformer's output against the runtime itself, which conftest.py
+        # reaches by importing omleruntime from the source tree. That import
+        # needs omle_ext, so without this target those tests cannot run.
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF
-          cmake --build build --target omle_runtime -j 4
+          python -m pip install --upgrade pip
+          pip install pybind11
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \
+            -DBUILD_PYTHON=ON \
+            -Dpybind11_DIR="$(python -c 'import pybind11; print(pybind11.get_cmake_dir())')" \
+            -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')"
+          cmake --build build --target omle_runtime omle_ext -j 4
           mvn -B -f java/pom.xml package -DskipTests
-          # `sbt package` also resolves the JNA jar into the Coursier cache,
-          # which spark/python/tests/conftest.py locates on the driver classpath.
-          (cd spark && sbt -batch package)
+          # mvn has now populated ~/.m2 with the JNA jar that
+          # spark/python/tests/conftest.py puts on the Spark driver classpath;
+          # sbt resolves the same dependency into the Coursier cache.
+          (cd spark && sbt -batch "++${{ matrix.spark.scala }}" package)
 
       - name: Test
         working-directory: omle-runtime/spark/python
@@ -470,7 +514,7 @@ jobs:
           PYSPARK_DRIVER_PYTHON: python
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pyspark numpy
+          pip install pytest numpy "pyspark==${{ matrix.spark.pyspark }}"
           pip install ../../../omle
           pip install .
           pytest tests -q

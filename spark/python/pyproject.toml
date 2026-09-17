@@ -7,7 +7,10 @@ name = "omle-spark"
 dynamic = ["version"]
 description = "PySpark wrapper for OMLE model scoring"
 requires-python = ">=3.10"
-dependencies = ["pyspark>=3.3"]
+# 3.5 is the floor because that is what the Scala 2.12 jar is compiled
+# against and what CI exercises; the jar loads on Spark 3.5.x (Scala 2.12)
+# and 4.x (Scala 2.13). 3.3/3.4 were never built or tested against.
+dependencies = ["pyspark>=3.5"]
 
 [tool.setuptools.packages.find]
 where = ["."]
