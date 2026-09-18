@@ -43,6 +43,10 @@
 *.dwo
 
 /build
+# scikit-build-core's persistent CMake tree (tool.scikit-build build-dir).
+# Kept across wheel builds so protobuf and Abseil compile once per platform
+# rather than once per interpreter; ~180 MB of build output.
+/python/build
 /protobuf
 /registries
 /**/*.pyc

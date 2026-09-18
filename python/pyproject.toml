@@ -47,6 +47,14 @@ cmake.source-dir = ".."
 cmake.args = ["-DBUILD_PYTHON=ON", "-DBUILD_TESTS=OFF"]
 wheel.packages = ["omleruntime"]
 
+# One CMake tree shared by every wheel, instead of a fresh temp directory per
+# build. protobuf and Abseil are pure C++ with no Python dependency, so they are
+# identical for cp310 through cp314; without this they are recompiled from
+# source once per interpreter, which is ~90% of each wheel's build time.
+# Switching interpreter changes only the Python cache variables, so CMake
+# reconfigures and rebuilds omle_ext while leaving the dependency objects alone.
+build-dir = "build/cibw"
+
 # ---------------------------------------------------------------------------
 # Binary wheels
 # ---------------------------------------------------------------------------
@@ -74,6 +82,13 @@ build-verbosity = 1
 # SKBUILD_CMAKE_ARGS, because the latter replaces cmake.args above (dropping
 # BUILD_PYTHON=ON and BUILD_TESTS=OFF) instead of adding to it.
 environment = { SKBUILD_CMAKE_DEFINE = "OMLE_BUNDLE_DEPS=ON" }
+
+# CMake writes omle_ext into the source package directory, and wheel.packages
+# copies that directory verbatim. The interpreters build one after another in
+# the same checkout, so without this the cp311 wheel also ships the cp310
+# extension, the cp312 wheel ships both, and so on — every wheel after the first
+# carrying modules for an ABI it cannot load.
+before-build = "python {project}/scripts/clean_ext.py"
 
 # Import from a temporary directory, so a wheel that silently depends on the
 # source tree or on a system protobuf fails here rather than for a user.
