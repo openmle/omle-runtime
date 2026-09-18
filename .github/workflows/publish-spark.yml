@@ -1,0 +1,93 @@
+name: Publish omle-spark
+
+# Publishes omle-spark (spark/python/) to PyPI.
+#
+# Pure Python, so one build serves every platform and interpreter — no
+# compilation, no matrix. The JARs it drives are built and released separately
+# by release.yml; this package is only the PySpark wrapper.
+#
+# fetch-depth: 0, because the version comes from git tags via setuptools-scm. A
+# shallow clone yields a 0.1.dev1+g<sha> version, which is not what should be
+# uploaded to an index.
+#
+# omle-runtime is published by publish-runtime.yml. They are separate files so
+# that each PyPI project's Trusted Publisher can name one workflow and grant
+# upload rights to that project alone.
+
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: "Index to publish to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+  push:
+    tags: ["v*"]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Build the sdist and the universal wheel.
+  # ---------------------------------------------------------------------------
+  dist:
+    name: sdist + wheel
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        working-directory: omle-runtime/spark/python
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Check the metadata is publishable
+        working-directory: omle-runtime/spark/python
+        # twine check catches a malformed long_description or bad classifiers,
+        # which the index rejects only at upload time.
+        run: |
+          pip install twine
+          twine check dist/*
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-omle-spark
+          path: omle-runtime/spark/python/dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2. Publish.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    needs: dist
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    permissions:
+      # Required for Trusted Publishing: the job mints a short-lived OIDC token
+      # instead of holding a long-lived API token in secrets. Configure the
+      # publisher once at
+      # https://pypi.org/manage/project/omle-spark/settings/publishing/
+      # naming this repository, publish-spark.yml, and the environment above.
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-omle-spark
+          path: dist
+
+      - run: ls -la dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ (github.event_name == 'workflow_dispatch' && inputs.index == 'testpypi') && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}

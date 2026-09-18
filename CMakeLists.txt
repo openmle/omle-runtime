@@ -99,6 +99,24 @@ if(OMLE_BUNDLE_DEPS)
   # version it was tested against, so that pin does not have to live here.
   set(protobuf_FORCE_FETCH_DEPENDENCIES ON CACHE BOOL "" FORCE)
 
+  if(MSVC)
+    # protobuf declares
+    #   cmake_dependent_option(protobuf_MSVC_STATIC_RUNTIME ... ON
+    #                          "NOT protobuf_BUILD_SHARED_LIBS" OFF)
+    # so asking for a static protobuf silently also asks for the static CRT
+    # (/MT), and protobuf hands the same choice to Abseil through
+    # ABSL_MSVC_STATIC_RUNTIME. This project's own objects use the dynamic CRT
+    # (/MD), and the link then fails with a wall of LNK2038 "RuntimeLibrary
+    # mismatch" errors.
+    #
+    # /MD is the side that has to win. A Python extension must use the same CRT
+    # as the interpreter that loads it, or memory allocated by one is freed by
+    # the other's heap. Static protobuf and a dynamic CRT is a supported
+    # combination; it is only the default that disagrees.
+    set(protobuf_MSVC_STATIC_RUNTIME OFF CACHE BOOL "" FORCE)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+  endif()
+
   FetchContent_Declare(protobuf
     URL      "https://github.com/protocolbuffers/protobuf/releases/download/v${OMLE_PROTOBUF_VERSION}/protobuf-${OMLE_PROTOBUF_VERSION}.tar.gz"
     URL_HASH SHA256=${OMLE_PROTOBUF_SHA256}
