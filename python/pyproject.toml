@@ -88,7 +88,11 @@ environment = { SKBUILD_CMAKE_DEFINE = "OMLE_BUNDLE_DEPS=ON" }
 # the same checkout, so without this the cp311 wheel also ships the cp310
 # extension, the cp312 wheel ships both, and so on — every wheel after the first
 # carrying modules for an ABI it cannot load.
-before-build = "python {project}/scripts/clean_ext.py"
+# {package} is python/, not the repo root: cibuildwheel is invoked from the
+# directory holding BOTH repositories, so {project} is that parent and the
+# script is not under it. Hopping up from {package} keeps this correct whatever
+# the parent directory is called.
+before-build = "python {package}/../scripts/clean_ext.py"
 
 # Import from a temporary directory, so a wheel that silently depends on the
 # source tree or on a system protobuf fails here rather than for a user.
