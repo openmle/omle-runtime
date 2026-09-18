@@ -127,7 +127,13 @@ def build_spark(run_tests: bool) -> None:
     header("Spark Scala — sbt package / test")
 
     # Java jar must exist first (sbt unmanagedJars references it).
-    java_jar = ROOT / "java" / "target" / "omle-runtime-0.1.0.jar"
+    # Version comes from the git tag, so match by prefix rather than by name.
+    _jars = [
+        p for p in (ROOT / "java" / "target").glob("omle-runtime-*.jar")
+        if not p.name.endswith(("-sources.jar", "-javadoc.jar"))
+    ]
+    java_jar = (max(_jars, key=lambda p: p.stat().st_mtime) if _jars
+                else ROOT / "java" / "target" / "omle-runtime.jar")
     if not java_jar.exists():
         print(f"  Java jar not found at {java_jar}; building Java first.")
         build_java(run_tests=False)

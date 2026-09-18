@@ -23,7 +23,24 @@ _SPARK_ROOT   = _HERE.parent.parent            # omle-runtime/spark/
 _OMLE_ROOT    = _SPARK_ROOT.parent             # omle-runtime/
 _RESOURCES    = _SPARK_ROOT / "src" / "test" / "resources"
 _NATIVE_LIB   = _OMLE_ROOT / "python" / "omleruntime"
-_RUNTIME_JAR  = _OMLE_ROOT / "java" / "target" / "omle-runtime-0.1.0.jar"
+def _newest_runtime_jar():
+    """The omle-runtime jar, whatever version it was built as.
+
+    Both JVM projects take their version from the git tag now, so the filename
+    is not knowable here. Sources and javadoc jars are excluded — a release
+    build produces those alongside the real one.
+    """
+    target = _OMLE_ROOT / "java" / "target"
+    jars = [
+        p for p in (target.glob("omle-runtime-*.jar") if target.is_dir() else [])
+        if not p.name.endswith(("-sources.jar", "-javadoc.jar"))
+    ]
+    # Newest by mtime, not by name: version strings do not sort lexically
+    # (0.10.0 < 0.2.0), and what is wanted is simply the jar just built.
+    return max(jars, key=lambda p: p.stat().st_mtime) if jars else None
+
+
+_RUNTIME_JAR = _newest_runtime_jar()
 
 
 def _jna_search_roots():
@@ -126,7 +143,14 @@ def _find_spark_jar():
     if want is None:
         return jars[0], None
 
-    matched = [p for p in jars if f"_{want}-" in p.name]
+    # Newest by mtime: versions come from the git tag now, so target/ commonly
+    # holds jars from earlier builds and glob order would pick between them at
+    # random.
+    matched = sorted(
+        (p for p in jars if f"_{want}-" in p.name),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if not matched:
         have = ", ".join(sorted(p.name for p in jars))
         return None, (

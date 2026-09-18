@@ -1,6 +1,19 @@
-name         := "omle-spark"
-organization := "io.github.openmle"
-version      := "0.1.0"
+name := "omle-spark"
+
+// Maven Central rejects a release without homepage, licenses, developers and
+// scmInfo. sbt-ci-release reads them from ThisBuild, and supplies the version
+// itself from the git tag — do not set `version` here.
+inThisBuild(List(
+  organization := "io.github.openmle",
+  homepage     := Some(url("https://github.com/openmle/omle-runtime")),
+  licenses     := List(
+    "Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")),
+  developers   := List(
+    Developer("openmle", "OMLE", "", url("https://github.com/openmle"))),
+  scmInfo      := Some(ScmInfo(
+    url("https://github.com/openmle/omle-runtime"),
+    "scm:git:https://github.com/openmle/omle-runtime.git")),
+))
 // Scala 2.12 and 2.13 are binary-incompatible, and a Spark cluster can only
 // load a jar built for the Scala version its own jars were built with — a
 // mismatch fails at run time with NoSuchMethodError deep inside the Scala
@@ -37,10 +50,19 @@ libraryDependencies ++= {
   )
 }
 
-// The omle-runtime Java bindings jar — build first with `mvn package` in java/
-Compile / unmanagedJars += Attributed.blank(
-  (baseDirectory.value / ".." / "java" / "target" / "omle-runtime-0.1.0.jar").getAbsoluteFile
-)
+// The omle-runtime Java bindings jar — build first with `mvn package` in java/.
+// Matched by glob rather than by name: both projects now take their version
+// from the git tag, so the filename is not known ahead of time. The sources and
+// javadoc jars that a release build also produces are excluded.
+Compile / unmanagedJars ++= {
+  val dir = (baseDirectory.value / ".." / "java" / "target").getAbsoluteFile
+  val jars = Option(dir.listFiles()).getOrElse(Array.empty).filter { f =>
+    f.getName.startsWith("omle-runtime-") && f.getName.endsWith(".jar") &&
+      !f.getName.endsWith("-sources.jar") && !f.getName.endsWith("-javadoc.jar")
+  }
+  // Newest by timestamp, not by name: version strings do not sort lexically.
+  jars.sortBy(_.lastModified).lastOption.map(Attributed.blank(_)).toSeq
+}
 
 Test / fork        := true
 Test / javaOptions ++= Seq(

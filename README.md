@@ -61,10 +61,10 @@ no extra option and no Python toolchain required:
 cmake -S . -B build
 cmake --build build
 
-# 2. Java bindings  →  java/target/omle-runtime-0.1.0.jar
+# 2. Java bindings  →  java/target/omle-runtime-<version>.jar
 cd java && mvn package && cd ..
 
-# 3. Spark transformer  →  spark/target/scala-2.13/omle-spark_2.13-0.1.0.jar
+# 3. Spark transformer  →  spark/target/scala-2.13/omle-spark_2.13-<version>.jar
 #    (reads the jar produced in step 2, so run it after)
 cd spark && sbt package && cd ..
 ```
@@ -248,7 +248,9 @@ Input arrays are automatically coerced to float32 C-contiguous layout. The GIL i
 
 ## Java API
 
-Maven coordinates `io.github.openmle:omle-runtime:0.1.0`, built with `mvn package` in `java/`.
+Maven coordinates `io.github.openmle:omle-runtime`, built with `mvn package` in `java/`.
+The version comes from the git tag — `mvn -Drevision=<version>` in CI, and an
+untagged local build produces `0.1.0-SNAPSHOT`.
 The `io.github.openmle` namespace is the GitHub-backed one on Maven Central: it is
 verified by owning the [openmle](https://github.com/openmle) GitHub organization, so
 publishing needs no custom domain.
@@ -298,7 +300,8 @@ inputs are scalar columns rather than one assembled vector.
 
 ## Spark (Scala / JVM)
 
-`io.github.openmle:omle-spark:0.1.0`, built with `sbt package` in `spark/`. `OMLEModel` is a
+`io.github.openmle:omle-spark`, built with `sbt package` in `spark/`, versioned
+from the git tag by sbt-dynver. `OMLEModel` is a
 plain Spark ML `Transformer`, so it drops into a `Pipeline` like any other stage.
 Both the `omle-spark` JAR and the `omle-runtime` JAR must be on the driver and
 executor class-paths. With a released `omle-runtime` jar that is the whole setup:
