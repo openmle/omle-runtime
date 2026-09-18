@@ -51,9 +51,9 @@ jobs:
           # if that does not apply, at the cost of aarch64 wheels.
           - os: ubuntu-24.04-arm
             target: linux-aarch64
-          # macos-13 is the last Intel image; macos-latest is Apple silicon.
-          - os: macos-13
-            target: macos-x86_64
+          # Apple silicon only. Intel macOS (macos-13) is deliberately not
+          # built: `pip install omle-runtime` on an Intel Mac will fall back to
+          # building from source, which needs a native toolchain.
           - os: macos-latest
             target: macos-arm64
           - os: windows-latest
@@ -87,7 +87,17 @@ jobs:
       - name: Show what was built
         working-directory: ${{ github.workspace }}
         shell: bash
-        run: ls -la wheelhouse/
+        # List the contents, not just the filenames. A wheel missing its native
+        # library still builds, uploads and installs — it only fails at import,
+        # by which point it is on an index. This is the cheapest place to see
+        # that the .pyd and the shared library are both actually in there.
+        run: |
+          ls -la wheelhouse/
+          echo
+          for whl in wheelhouse/*.whl; do
+            echo "=== $whl"
+            python -c "import sys,zipfile;[print(f'  {i.file_size:>12,}  {i.filename}') for i in sorted(zipfile.ZipFile(sys.argv[1]).infolist(),key=lambda i:i.filename) if not i.filename.endswith('/')]" "$whl"
+          done
 
       - uses: actions/upload-artifact@v4
         with:

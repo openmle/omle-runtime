@@ -79,7 +79,7 @@ extracts the right one on its own.
 
 | | linux | macOS | Windows |
 |---|---|---|---|
-| x86-64 | yes | yes | yes |
+| x86-64 | yes | — | yes |
 | arm64 | yes | yes | — |
 
 Anything outside that table still needs a locally built library and one of the
@@ -389,8 +389,12 @@ readable on the executors.
 ## CLI tools
 
 Both tools are statically linked, so they run from anywhere with nothing beside
-them. `pip install omle-runtime` puts them on `PATH`; a source build leaves them
-in the build directory, where they are invoked as `./omle-predict`.
+them. A source build leaves both in the build directory, where they are invoked
+as `./omle-predict`.
+
+Only `omle-predict` ships in the wheel, where `pip install omle-runtime` puts it
+on `PATH`. `omle-benchmark` is a tool for tuning the runtime rather than using
+it, so it is not worth ~1.5 MB in every wheel — build from source to get it.
 
 ### `omle-predict`
 

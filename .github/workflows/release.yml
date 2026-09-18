@@ -50,10 +50,8 @@ jobs:
           - os: ubuntu-24.04-arm
             target: linux-aarch64
             lib: libomleruntime.so
-          # macos-13 is the last Intel image; macos-latest is Apple silicon.
-          - os: macos-13
-            target: darwin-x86-64
-            lib: libomleruntime.dylib
+          # Apple silicon only, matching the wheel matrix in
+          # publish-runtime.yml. An Intel Mac has to build from source.
           - os: macos-latest
             target: darwin-aarch64
             lib: libomleruntime.dylib
@@ -182,7 +180,7 @@ jobs:
           # guarding: it builds, publishes, and only breaks for the subset of
           # users on that platform.
           MISSING=""
-          for prefix in linux-x86-64 linux-aarch64 darwin-x86-64 darwin-aarch64 win32-x86-64; do
+          for prefix in linux-x86-64 linux-aarch64 darwin-aarch64 win32-x86-64; do
             ls "$RES/$prefix"/* >/dev/null 2>&1 || MISSING="$MISSING $prefix"
           done
           if [ -n "$MISSING" ]; then

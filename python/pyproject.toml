@@ -85,6 +85,21 @@ test-command = "python -c \"import omleruntime; print('wheel ok', omleruntime.__
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 
+[tool.cibuildwheel.windows]
+# delvewheel walks omle_ext.pyd's imports and has to resolve every one. It finds
+# omleruntime.dll nowhere: the DLL is not on PATH, and CMake writes it into the
+# package directory rather than anywhere delvewheel searches by default, so the
+# repair step fails with "Unable to find library: omleruntime.dll" even though
+# the build itself succeeded.
+#
+# --add-path points it at that directory. {package} is an absolute path to
+# python/, so the DLL is at {package}/omleruntime/omleruntime.dll.
+#
+# The DLL is self-contained already (OMLE_BUNDLE_DEPS links protobuf and Abseil
+# statically), so there is nothing else for delvewheel to vendor beyond the
+# MSVC runtime, which it leaves alone by design.
+repair-wheel-command = "delvewheel repair --add-path {package}/omleruntime -w {dest_dir} -v {wheel}"
+
 [tool.cibuildwheel.macos]
 # Protobuf and Abseil require a newer minimum than cibuildwheel's default of
 # 10.9, and arm64 starts at 11.0 regardless.

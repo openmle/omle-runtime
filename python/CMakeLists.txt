@@ -48,18 +48,23 @@ if(pybind11_FOUND)
     # tools, but nothing shipped them: there are no install rules, and the
     # wheel is assembled from this directory, so a user had no way to get them.
     #
-    # They link the static runtime (see the top-level CMakeLists), so each is a
-    # standalone executable: no rpath, no shared library to find, nothing to
-    # stage beside them on Windows, and they keep working if copied out of the
-    # installation entirely.
+    # omle-predict only. It links the static runtime (see the top-level
+    # CMakeLists), so it is a standalone executable: no rpath, no shared library
+    # to find, nothing to stage beside it on Windows, and it keeps working if
+    # copied out of the installation entirely.
     #
-    # Being standalone is what lets them install straight into the wheel's
-    # scripts directory, which pip puts on PATH. A tool linked against the
-    # shared library could not: from bin/ the hop back to the library inside
+    # Being standalone is what lets it install straight into the wheel's scripts
+    # directory, which pip puts on PATH. A tool linked against the shared
+    # library could not: from bin/ the hop back to the library inside
     # site-packages embeds the Python version, and has no Windows equivalent.
-    # That version would have needed the binaries hidden in the package plus a
-    # console-script shim to exec them; these need neither.
-    install(TARGETS omle_predict omle_benchmark
+    #
+    # omle-benchmark is deliberately NOT shipped. It generates random inputs and
+    # reports latency, throughput and RSS — a tool for tuning the runtime, not
+    # for using it — and at ~1.5 MB (3.6 MB with vendored deps) it would roughly
+    # double the CLI payload of every wheel for an audience of runtime
+    # developers, who build from source anyway. It is still built by the normal
+    # C++ build and sits in the build directory.
+    install(TARGETS omle_predict
             RUNTIME DESTINATION ${SKBUILD_SCRIPTS_DIR})
 else()
     message(STATUS "pybind11 not found — omle_ext skipped (ctypes fallback active)")
