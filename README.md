@@ -72,6 +72,19 @@ cd spark && sbt package && cd ..
 Point JNA at the directory holding `libomleruntime` with either `-Djna.library.path=<dir>`
 or the binding-specific `-Dio.github.openmle.libpath=<dir>`.
 
+This applies to a build from source, where the library sits in the build tree.
+A **released** jar needs none of it: it carries `libomleruntime` for every
+supported platform at the layout JNA searches, so `Native.load` finds and
+extracts the right one on its own.
+
+| | linux | macOS | Windows |
+|---|---|---|---|
+| x86-64 | yes | yes | yes |
+| arm64 | yes | yes | — |
+
+Anything outside that table still needs a locally built library and one of the
+two properties above.
+
 ## C++ API
 
 ### Loading a model
@@ -239,9 +252,11 @@ Maven coordinates `io.github.openmle:omle-runtime:0.1.0`, built with `mvn packag
 The `io.github.openmle` namespace is the GitHub-backed one on Maven Central: it is
 verified by owning the [openmle](https://github.com/openmle) GitHub organization, so
 publishing needs no custom domain.
-The binding is a JNA wrapper over the C ABI, so the native `libomleruntime` shared
-library must be visible at run time — either on `jna.library.path` or via
-`-Dio.github.openmle.libpath=<dir>`, which supplements it.
+The binding is a JNA wrapper over the C ABI, so the native `libomleruntime` has to
+be loadable at run time. The released jar bundles it for the platforms listed
+above and JNA extracts it automatically, so a consumer of that jar configures
+nothing. Building from source, point JNA at the build output with
+`jna.library.path` or `-Dio.github.openmle.libpath=<dir>`.
 
 `Model`, `Session` and `Tensor` all implement `AutoCloseable`; use
 try-with-resources so the native handles are released deterministically.
@@ -286,7 +301,12 @@ inputs are scalar columns rather than one assembled vector.
 `io.github.openmle:omle-spark:0.1.0`, built with `sbt package` in `spark/`. `OMLEModel` is a
 plain Spark ML `Transformer`, so it drops into a `Pipeline` like any other stage.
 Both the `omle-spark` JAR and the `omle-runtime` JAR must be on the driver and
-executor class-paths, and `libomleruntime` must be loadable by JNA on **every node**:
+executor class-paths. With a released `omle-runtime` jar that is the whole setup:
+the native library travels inside it, so every executor JVM extracts its own copy
+and nothing has to be staged on the nodes.
+
+Only when the `omle-runtime` jar was built locally — and so carries no bundled
+library — does JNA need pointing at one that exists on **every node**:
 
 ```
 --conf spark.driver.extraJavaOptions=-Djna.library.path=/opt/omle/lib
@@ -323,8 +343,9 @@ Scoring runs inside the executors, one native session per partition.
 ## PySpark
 
 `pip install omle-spark`. A thin wrapper that delegates `transform` to the same
-JVM `io.github.openmle.spark.OMLEModel`, so it carries the identical JAR and
-`jna.library.path` requirements as the Scala API above.
+JVM `io.github.openmle.spark.OMLEModel`, so it needs the same two JARs on the
+class-path — and, like the Scala API, no `jna.library.path` when the
+`omle-runtime` jar is a released one.
 
 Input columns are resolved from the model's declared input specs. A model with a
 single rank-2 input (`[-1, n_features]`) reads from `featuresCol`, the usual Spark
@@ -364,14 +385,46 @@ readable on the executors.
 
 ## CLI tools
 
-```bash
-# Print model metadata and run inference on a CSV file
-# CSV: one sample per line, comma-separated floats, no header
-./omle-predict model.omle features.csv
+Both tools are statically linked, so they run from anywhere with nothing beside
+them. `pip install omle-runtime` puts them on `PATH`; a source build leaves them
+in the build directory, where they are invoked as `./omle-predict`.
 
-# Benchmark throughput
-# Args: model  n_samples  n_threads  n_warmup_reps  n_bench_reps
-./omle-benchmark model.omle 10000 4 5 20
+### `omle-predict`
+
+```
+omle-predict <model.omle> [features.csv] [predictions.csv]
+```
+
+Input CSV: one sample per line, comma-separated floats, no header. Without it,
+the metadata is printed and nothing is scored; without `predictions.csv`, the
+input is scored but not written. Predictions go to the file, never to stdout.
+
+```console
+$ omle-predict model.omle features.csv predictions.csv
+Model loaded: 2 features, 1 outputs
+
+Inputs (1):
+  X                     dtype=11        shape=[-1,2]
+
+Outputs (1):
+  score                 dtype=0         role=0     shape=[]
+
+Scored 4 records (2 features in, 1 column out) in 0.02 ms
+Wrote 4 rows to predictions.csv
+```
+
+### `omle-benchmark`
+
+```
+omle-benchmark <model.omle> [n_samples] [n_threads] [n_warmup] [n_reps]
+```
+
+Generates random inputs and reports mean, min and max latency in milliseconds,
+throughput in samples/sec, and resident memory. Only the model is required; the
+remaining arguments are positional.
+
+```bash
+omle-benchmark model.omle 10000 4 5 20
 ```
 
 ## Running tests

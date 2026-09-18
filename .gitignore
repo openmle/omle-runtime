@@ -51,6 +51,10 @@
 /.vscode
 /.cache
 /java/target
+# Staged by the release workflow: the per-platform native libraries are copied
+# here so Maven packages them into the jar at <jna-prefix>/<libname>. Build
+# output, never committed.
+/java/src/main/resources
 /spark/.bsp
 /spark/target
 /spark/project/target

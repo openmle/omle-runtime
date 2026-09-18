@@ -1,0 +1,191 @@
+name: Publish Python packages
+
+# Publishes the two Python distributions in this repository:
+#
+#   omle-runtime  python/        binary wheels (native extension)
+#   omle-spark    spark/python/  pure Python, one wheel + sdist
+#
+# omle-runtime is the awkward one. It compiles a native extension, so it needs a
+# wheel per platform and per interpreter, and it is built with
+# OMLE_BUNDLE_DEPS=ON so protobuf and Abseil are linked in statically. Without
+# that the wheel records absolute paths to the build machine's protobuf and
+# fails to import anywhere else.
+#
+# Two details about how cibuildwheel is invoked here:
+#
+#   * It runs from the directory holding BOTH repositories, passing
+#     omle-runtime/python as the package. cibuildwheel copies its working
+#     directory into the container and places the package at
+#     /project/<path relative to cwd>, so running it from the parent is what
+#     makes cmake.source-dir = ".." resolve and what puts the sibling omle
+#     repository (which owns omle.proto) inside the container.
+#   * fetch-depth: 0, because both packages take their version from git tags via
+#     setuptools-scm. A shallow clone yields a 0.1.dev1+g<sha> version, which is
+#     not what should be uploaded to an index.
+
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: "Index to publish to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+      packages:
+        description: "Which distributions to publish"
+        type: choice
+        options: [both, omle-runtime, omle-spark]
+        default: both
+  push:
+    tags: ["v*"]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. omle-runtime — one wheel per platform per interpreter.
+  # ---------------------------------------------------------------------------
+  runtime-wheels:
+    name: Wheels (${{ matrix.target }})
+    if: github.event_name == 'push' || inputs.packages != 'omle-spark'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+          # Free arm64 Linux runners are public-repository only; drop this entry
+          # if that does not apply, at the cost of aarch64 wheels.
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+          # macos-13 is the last Intel image; macos-latest is Apple silicon.
+          - os: macos-13
+            target: macos-x86_64
+          - os: macos-latest
+            target: macos-arm64
+          - os: windows-latest
+            target: windows-x86_64
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+          fetch-depth: 0
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        # Run from the workspace root, not from omle-runtime/ — see the note at
+        # the top of this file. No protobuf is installed anywhere here: the
+        # build vendors its own, and having none on the runner means it cannot
+        # quietly fall back to a system copy.
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install cibuildwheel==4.2.1
+          python -m cibuildwheel --output-dir wheelhouse omle-runtime/python
+
+      - name: Show what was built
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: ls -la wheelhouse/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-omle-runtime-${{ matrix.target }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2. omle-spark — pure Python, so one build serves every platform.
+  # ---------------------------------------------------------------------------
+  spark-dist:
+    name: omle-spark sdist + wheel
+    if: github.event_name == 'push' || inputs.packages != 'omle-runtime'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        working-directory: omle-runtime/spark/python
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Check the metadata is publishable
+        working-directory: omle-runtime/spark/python
+        # twine check catches a malformed long_description or bad classifiers,
+        # which the index rejects only at upload time.
+        run: |
+          pip install twine
+          twine check dist/*
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-omle-spark
+          path: omle-runtime/spark/python/dist/*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3. Publish. One job per project: Trusted Publishing mints a token scoped to
+  #    a single PyPI project, so the two cannot share an upload step.
+  # ---------------------------------------------------------------------------
+  publish-runtime:
+    name: Publish omle-runtime
+    needs: runtime-wheels
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    permissions:
+      # Required for Trusted Publishing: the job mints a short-lived OIDC token
+      # instead of holding a long-lived API token in secrets. Configure the
+      # publisher once per project at
+      # https://pypi.org/manage/project/omle-runtime/settings/publishing/
+      # naming this repository, this workflow file, and the environment above.
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-omle-runtime-*
+          path: dist
+          merge-multiple: true
+
+      - run: ls -la dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ (github.event_name == 'workflow_dispatch' && inputs.index == 'testpypi') && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+
+  publish-spark:
+    name: Publish omle-spark
+    needs: spark-dist
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-omle-spark
+          path: dist
+
+      - run: ls -la dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ (github.event_name == 'workflow_dispatch' && inputs.index == 'testpypi') && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}

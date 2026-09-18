@@ -40,6 +40,27 @@ if(pybind11_FOUND)
         LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/omleruntime/$<0:>"
     )
     add_dependencies(omle_ext omle_runtime)
+
+    # ---------------------------------------------------------------------
+    # Bundle the CLI tools with the wheel.
+    # ---------------------------------------------------------------------
+    # omle-predict and omle-benchmark are documented as the project's CLI
+    # tools, but nothing shipped them: there are no install rules, and the
+    # wheel is assembled from this directory, so a user had no way to get them.
+    #
+    # They link the static runtime (see the top-level CMakeLists), so each is a
+    # standalone executable: no rpath, no shared library to find, nothing to
+    # stage beside them on Windows, and they keep working if copied out of the
+    # installation entirely.
+    #
+    # Being standalone is what lets them install straight into the wheel's
+    # scripts directory, which pip puts on PATH. A tool linked against the
+    # shared library could not: from bin/ the hop back to the library inside
+    # site-packages embeds the Python version, and has no Windows equivalent.
+    # That version would have needed the binaries hidden in the package plus a
+    # console-script shim to exec them; these need neither.
+    install(TARGETS omle_predict omle_benchmark
+            RUNTIME DESTINATION ${SKBUILD_SCRIPTS_DIR})
 else()
     message(STATUS "pybind11 not found — omle_ext skipped (ctypes fallback active)")
 endif()

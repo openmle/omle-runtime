@@ -128,8 +128,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         # Oldest and newest supported; the interpreters in between are covered
-        # by the pure-Python repositories.
-        python-version: ["3.10", "3.13"]
+        # by the pure-Python repositories. Keep the upper bound in step with the
+        # omle package and with the cp3xx list in python/pyproject.toml.
+        python-version: ["3.10", "3.14"]
 
     steps:
       - uses: actions/checkout@v4.2.2
@@ -250,11 +251,18 @@ jobs:
         # hardcode a runner path. On Linux and macOS protobuf sits in a default
         # search path so find_package succeeds regardless; on Windows it exists
         # only in the conda prefix and has to be pointed at again.
-        # SKBUILD_CMAKE_ARGS is scikit-build-core's env-var channel for that,
-        # and pip forwards the environment into the isolated build.
+        #
+        # This has to be SKBUILD_CMAKE_DEFINE, not SKBUILD_CMAKE_ARGS. Each
+        # env var *replaces* the pyproject.toml key it maps to rather than
+        # adding to it, and cmake.args already carries BUILD_PYTHON=ON and
+        # BUILD_TESTS=OFF — overriding it silently dropped both, which turned
+        # into a GTest configure error from the tests/ subdirectory that
+        # BUILD_TESTS=OFF was there to skip. cmake.define is a separate key,
+        # so setting it leaves cmake.args intact. pip forwards the environment
+        # into the isolated build.
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            export SKBUILD_CMAKE_ARGS="-DCMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/conda-deps/Library"
+            export SKBUILD_CMAKE_DEFINE="CMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/conda-deps/Library"
           fi
           pip install ./python
           # Run from elsewhere so the source tree cannot satisfy the import.
@@ -359,6 +367,98 @@ jobs:
         # The build drops the library next to the Python package; that
         # directory is what JNA has to search.
         run: mvn -B test -Djna.library.path="$GITHUB_WORKSPACE/omle-runtime/python/omleruntime"
+
+  # ---------------------------------------------------------------------------
+  # 3b. Self-contained build — OMLE_BUNDLE_DEPS.
+  #
+  #     A distributable artifact (a wheel, or a JNA fat jar) has to load on a
+  #     machine that never installed protobuf. A normal build does not: protobuf
+  #     >= 22 pulls Abseil, so libomleruntime ends up with ~57 extra shared
+  #     objects recorded by absolute path. OMLE_BUNDLE_DEPS builds both from
+  #     pinned source as static archives and folds them in.
+  #
+  #     This job deliberately installs no protobuf at all. That is half the
+  #     test: if the vendored build ever silently fell back to a system
+  #     protobuf, there would be nothing here to fall back to.
+  # ---------------------------------------------------------------------------
+  bundled:
+    name: Self-contained (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build with vendored static protobuf and Abseil
+        shell: bash
+        # Builds protobuf, protoc and Abseil from source, so it is slower than
+        # the other jobs by several minutes.
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \
+            -DOMLE_BUNDLE_DEPS=ON
+          cmake --build build --config Release --target omle_runtime -j 4
+
+      - name: Assert nothing external is linked
+        shell: bash
+        # The whole point of the option is this number being zero. Checked with
+        # the platform's own tool where there is one; Windows has no ldd/otool
+        # without a developer shell, so there it is covered by the load test
+        # below plus the absence of any protobuf on the runner.
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              LIB=python/omleruntime/libomleruntime.so
+              ldd "$LIB" || true
+              LEAKED=$(ldd "$LIB" | grep -ciE 'protobuf|absl' || true)
+              ;;
+            macOS)
+              LIB=python/omleruntime/libomleruntime.dylib
+              otool -L "$LIB" || true
+              LEAKED=$(otool -L "$LIB" | grep -ciE 'protobuf|absl' || true)
+              ;;
+            *)
+              LIB=python/omleruntime/omleruntime.dll
+              LEAKED=0
+              ;;
+          esac
+          test -f "$LIB" || { echo "::error::$LIB was not built"; exit 1; }
+          if [ "$LEAKED" -ne 0 ]; then
+            echo "::error::$LIB still links $LEAKED protobuf/abseil libraries;"
+            echo "the vendored build fell back to a system copy."
+            exit 1
+          fi
+          echo "$LIB links no protobuf/abseil shared libraries"
+
+      - name: Load it with no dependency directories in scope
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        # Loading from outside the build tree, with nothing added to PATH,
+        # is what a user on a clean machine does. On Windows this is the
+        # primary check: since 3.8 CPython resolves a DLL's dependencies
+        # without consulting PATH, so a library that still needed
+        # libprotobuf.dll could not load here.
+        run: |
+          python -c "
+          import ctypes, os, sys
+          lib = os.path.join(r'${{ github.workspace }}', 'omle-runtime', 'python', 'omleruntime',
+                             {'win32': 'omleruntime.dll'}.get(sys.platform,
+                             'libomleruntime.dylib' if sys.platform == 'darwin' else 'libomleruntime.so'))
+          ctypes.CDLL(lib)
+          print('loaded standalone:', lib)
+          "
 
   # ---------------------------------------------------------------------------
   # 4. Scala — io.github.openmle.spark. sbt reads java/target/omle-runtime.jar

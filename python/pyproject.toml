@@ -1,5 +1,10 @@
 [build-system]
-requires = ["scikit-build-core>=0.3", "setuptools-scm>=8"]
+# pybind11 is a build requirement, not just a convenience: python/CMakeLists.txt
+# probes for it and, when it is missing, prints "omle_ext skipped" and carries
+# on. The build then SUCCEEDS and produces a wheel with no extension module,
+# which only fails later at import. A local build can find an ambient pybind11
+# and hide this; an isolated one (pip, cibuildwheel) cannot.
+requires = ["scikit-build-core>=0.3", "setuptools-scm>=8", "pybind11>=2.12"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -8,6 +13,29 @@ dynamic = ["version"]
 description = "OMLE inference runtime — fast classical ML inference"
 requires-python = ">=3.10"
 dependencies = ["numpy"]
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "OMLE contributors" }]
+keywords = ["machine-learning", "inference", "scikit-learn", "onnx", "runtime"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: C++",
+]
+
+[project.urls]
+Homepage = "https://github.com/openmle/omle-runtime"
+Source = "https://github.com/openmle/omle-runtime"
+Issues = "https://github.com/openmle/omle-runtime/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "pandas"]
@@ -18,6 +46,49 @@ cmake.build-type = "Release"
 cmake.source-dir = ".."
 cmake.args = ["-DBUILD_PYTHON=ON", "-DBUILD_TESTS=OFF"]
 wheel.packages = ["omleruntime"]
+
+# ---------------------------------------------------------------------------
+# Binary wheels
+# ---------------------------------------------------------------------------
+# cibuildwheel must be invoked from the directory holding BOTH repositories,
+# with this package passed as the package dir:
+#
+#   cibuildwheel --output-dir wheelhouse omle-runtime/python
+#
+# It copies its working directory into the build container and resolves the
+# package at /project/<pkg dir relative to cwd>, so running it from the parent
+# is what puts omle-runtime (for cmake.source-dir = "..") and the sibling omle
+# repository (for omle.proto) inside the container. Running it from
+# omle-runtime/ instead builds nothing but errors about a missing proto.
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+# musllinux would need protobuf and Abseil rebuilt against musl on top of
+# everything else; glibc and the three desktop platforms cover the users this
+# package has.
+skip = "*-musllinux_* *-win32 *_i686"
+build-verbosity = 1
+
+# OMLE_BUNDLE_DEPS is the whole point of publishing wheels: it statically links
+# protobuf and Abseil, so the wheel carries no reference to a protobuf that the
+# user's machine has to supply. SKBUILD_CMAKE_DEFINE rather than
+# SKBUILD_CMAKE_ARGS, because the latter replaces cmake.args above (dropping
+# BUILD_PYTHON=ON and BUILD_TESTS=OFF) instead of adding to it.
+environment = { SKBUILD_CMAKE_DEFINE = "OMLE_BUNDLE_DEPS=ON" }
+
+# Import from a temporary directory, so a wheel that silently depends on the
+# source tree or on a system protobuf fails here rather than for a user.
+test-command = "python -c \"import omleruntime; print('wheel ok', omleruntime.__file__)\""
+
+[tool.cibuildwheel.linux]
+# C++17 across protobuf, Abseil and this project. manylinux2014's gcc is old
+# enough to make that painful; _2_28 ships gcc 12.
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.macos]
+# Protobuf and Abseil require a newer minimum than cibuildwheel's default of
+# 10.9, and arm64 starts at 11.0 regardless.
+environment = { SKBUILD_CMAKE_DEFINE = "OMLE_BUNDLE_DEPS=ON", MACOSX_DEPLOYMENT_TARGET = "11.0" }
 
 [tool.setuptools_scm]
 # The package lives in python/ inside the repo; point setuptools-scm at the
