@@ -85,6 +85,70 @@ extracts the right one on its own.
 Anything outside that table still needs a locally built library and one of the
 two properties above.
 
+## Performance
+
+Speedup over the framework's own predictor, from the suite in
+[`benchmark/`](benchmark/README.md) — 27 models across XGBoost, LightGBM,
+scikit-learn and ONNX Runtime, checked for numerical agreement as well as
+latency. Apple M-series, `small` models, `min` latency.
+
+**Small batches** (`>1` means faster than native). Neither framework engages its
+own threads at this size, so these hold regardless of core count:
+
+| Model | batch 1 | batch 10 |
+|-------|--------:|---------:|
+| xgb/regression | **42.20x** | 14.13x |
+| xgb/binary | **21.73x** | 9.37x |
+| xgb/multiclass | **29.19x** | 6.11x |
+| xgb/mnist | **23.65x** | 4.39x |
+| lgbm/regression | **13.35x** | 5.18x |
+| lgbm/binary | **7.52x** | 3.26x |
+| lgbm/multiclass | **5.23x** | 1.68x |
+| lgbm/mnist | **5.69x** | 1.24x |
+| sklearn adult pipeline | **186.22x** | 90.60x |
+
+The pipeline case is the widest because the native path re-runs the whole
+`ColumnTransformer` on every call, while OMLE compiles it into the graph.
+
+**Large batches**, `medium` models, batch 10 000. XGBoost and LightGBM predict on
+every core unless told otherwise, so both sides are pinned here:
+
+| Model | native | OMLE | 1 thread each | all 11 cores each |
+|-------|-------:|-----:|--------------:|------------------:|
+| xgb/regression | 30.99 ms | 34.01 ms | 0.91x | 0.90x |
+| xgb/binary | 10.59 ms | 10.69 ms | 0.99x | 1.33x |
+| lgbm/regression | 162.40 ms | 34.99 ms | **4.64x** | **4.23x** |
+| lgbm/binary | 60.68 ms | 23.14 ms | **2.62x** | **2.39x** |
+
+Thread scaling is near-identical on both sides, so the ratio barely moves between
+the two columns. The `ms` figures are the single-thread pair. Leave the runtime at
+its one-thread default against a stock XGBoost or LightGBM and you are measuring
+core count, not kernels.
+
+**Tuning for throughput.** Two load-time settings, and the product is what
+counts. They are `LoadOptions` fields in C++ (*C++ API* below), the same two
+fields in the C API, and keyword arguments in Python; the JVM bindings take the
+thread count only and leave the row floor at 64:
+
+```cpp
+omle::LoadOptions opts;
+opts.n_threads         = 8;   // 0 = auto (hardware_concurrency); default 1
+opts.min_parallel_rows = 64;  // per-thread row floor; default 64
+```
+
+A batch is split only once it holds `n_threads * min_parallel_rows` rows, so at
+`n_threads = 8` anything under 512 rows still runs serially — raising the thread
+count alone can leave mid-sized batches untouched. Serving batches in the
+hundreds, lower `min_parallel_rows` alongside it; the benchmark README measures
+2.4-4.3x left unclaimed at batches of 100-500 on the default.
+
+`Session::run` is always serial on the calling thread whatever these are set to,
+which is what you want when the server is already concurrent. `Model::predict` is
+the one that uses the pool.
+
+See [`benchmark/README.md`](benchmark/README.md) for the full five-batch matrix,
+ONNX Runtime comparison, memory figures and how to reproduce all of it.
+
 ## C++ API
 
 ### Loading a model
@@ -109,7 +173,8 @@ auto result = omle::Model::load(data_ptr, data_size);
 ```cpp
 omle::LoadOptions opts;
 opts.n_threads         = 4;    // 0 = auto (hardware_concurrency), 1 = single-threaded
-opts.min_parallel_rows = 64;   // minimum batch size to engage the thread pool
+opts.min_parallel_rows = 64;   // rows per thread needed before the pool is used;
+                               // a batch engages it at n_threads * this (see Performance)
 opts.run_verification  = true; // run built-in correctness cases embedded in the model
 opts.run_warmup        = true; // execute warmup passes to pre-populate caches
 
@@ -229,7 +294,7 @@ Error codes: `OMLE_OK`, `OMLE_ERR_FILE_NOT_FOUND`, `OMLE_ERR_PARSE`, `OMLE_ERR_I
 ## Python API
 
 ```python
-import omleruntime as rt
+import omle_runtime as rt
 import numpy as np
 
 model = rt.load("model.omle", n_threads=4)
@@ -355,7 +420,7 @@ single rank-2 input (`[-1, n_features]`) reads from `featuresCol`, the usual Spa
 ML convention for a pre-assembled vector:
 
 ```python
-from omle.spark import OMLEModel
+from omle_spark import OMLEModel
 from pyspark.ml.feature import VectorAssembler
 
 assembler = VectorAssembler(inputCols=["f0", "f1"], outputCol="features")

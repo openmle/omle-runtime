@@ -1,5 +1,5 @@
 """
-Tests for the omleruntime Python API (pybind11 extension module).
+Tests for the omle_runtime Python API (pybind11 extension module).
 
 Run with:
     cd python && python3 -m pytest tests/ -v
@@ -15,8 +15,8 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-import omleruntime as omr
-from omleruntime import (
+import omle_runtime as omr
+from omle_runtime import (
     DataType,
     InputSpec,
     Model,

@@ -98,7 +98,8 @@ typedef enum omle_tensor_kind {
 
 typedef struct omle_load_options {
   int n_threads;          // 0 = auto, 1 = single-threaded (default)
-  int min_parallel_rows;  // default 64
+  int min_parallel_rows;  // rows per thread; a batch parallelises at
+                          // n_threads * this. default 64
 } omle_load_options_t;
 
 // Default-initialised load options.

@@ -37,9 +37,9 @@ Issues = "https://github.com/openmle/omle-runtime/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["omle*"]
+include = ["omle_spark*"]
 
 [tool.setuptools_scm]
 # Two levels down from the git root (spark/python/), so point upward twice.
 root = "../.."
-version_file = "omle/_version.py"
+version_file = "omle_spark/_version.py"

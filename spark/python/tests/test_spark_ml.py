@@ -1,4 +1,4 @@
-"""Integration tests for omle.spark.OMLEModel (Python/PySpark API).
+"""Integration tests for omle_spark.OMLEModel (Python/PySpark API).
 
 Mirrors OMLEModelSpec.scala — covers params, schema, correctness,
 native-match, edge cases, and multi-partition behaviour.
@@ -44,7 +44,7 @@ def _collect_sorted(df, *cols):
 
 class TestRegressionParams:
     def test_default_params(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel(modelPath=regr_model_path)
         assert m.getModelPath()    == regr_model_path
         assert m.getFeaturesCol()  == "features"
@@ -52,27 +52,27 @@ class TestRegressionParams:
         assert m.getProbabilityCol() == "probability"
 
     def test_set_model_path(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel().setModelPath(regr_model_path)
         assert m.getModelPath() == regr_model_path
 
     def test_set_features_col(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel(modelPath=regr_model_path).setFeaturesCol("feats")
         assert m.getFeaturesCol() == "feats"
 
     def test_set_prediction_col(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel(modelPath=regr_model_path).setPredictionCol("score")
         assert m.getPredictionCol() == "score"
 
     def test_set_probability_col(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel(modelPath=regr_model_path).setProbabilityCol("probs")
         assert m.getProbabilityCol() == "probs"
 
     def test_constructor_kwargs(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel(
             modelPath=regr_model_path,
             featuresCol="myFeats",
@@ -84,7 +84,7 @@ class TestRegressionParams:
         assert m.getProbabilityCol() == "myProb"
 
     def test_set_params(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel()
         m.setParams(modelPath=regr_model_path, predictionCol="p")
         assert m.getModelPath()     == regr_model_path
@@ -93,7 +93,7 @@ class TestRegressionParams:
 
 class TestRegressionSchema:
     def test_prediction_col_added(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         from pyspark.sql.types import DoubleType
         df  = _make_regr_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=regr_model_path).transform(df)
@@ -101,13 +101,13 @@ class TestRegressionSchema:
         assert isinstance(out.schema["prediction"].dataType, DoubleType)
 
     def test_no_probability_col_for_regression(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=regr_model_path).transform(df)
         assert "probability" not in out.columns
 
     def test_original_cols_preserved(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.1, 99.0)])
         out = OMLEModel(modelPath=regr_model_path).transform(df)
         assert "f0" in out.columns
@@ -115,7 +115,7 @@ class TestRegressionSchema:
         assert "features" in out.columns
 
     def test_custom_prediction_col_name(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=regr_model_path, predictionCol="score").transform(df)
         assert "score" in out.columns
@@ -126,28 +126,28 @@ class TestRegressionCorrectness:
     """2-feature model: feat0 < 0.5 → +2.0, feat0 >= 0.5 → −2.0."""
 
     def test_left_branch(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=regr_model_path).transform(df)
         pred = out.select("prediction").collect()[0][0]
         assert abs(pred - 2.0) < 1e-5
 
     def test_right_branch(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.9, 0.0)])
         out = OMLEModel(modelPath=regr_model_path).transform(df)
         pred = out.select("prediction").collect()[0][0]
         assert abs(pred - (-2.0)) < 1e-5
 
     def test_boundary_goes_right(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.5, 0.0)])
         out = OMLEModel(modelPath=regr_model_path).transform(df)
         pred = out.select("prediction").collect()[0][0]
         assert abs(pred - (-2.0)) < 1e-5
 
     def test_batch(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         rows = [(0.1, 0.0), (0.9, 0.0), (0.3, 0.0), (0.7, 0.0)]
         df   = _make_regr_df(spark, rows)
         out  = OMLEModel(modelPath=regr_model_path).transform(df)
@@ -158,19 +158,19 @@ class TestRegressionCorrectness:
         assert abs(preds[0.7] + 2.0)  < 1e-5
 
     def test_single_row(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.2, 5.0)])
         out = OMLEModel(modelPath=regr_model_path).transform(df)
         assert out.count() == 1
 
     def test_empty_dataframe(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_regr_df(spark, [(0.1, 0.0)]).filter("f0 < 0")
         out = OMLEModel(modelPath=regr_model_path).transform(df)
         assert out.count() == 0
 
     def test_multipartition(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         rows = [(float(i) / 10, 0.0) for i in range(20)]
         df   = _make_regr_df(spark, rows).repartition(8)
         out  = OMLEModel(modelPath=regr_model_path).transform(df)
@@ -181,10 +181,10 @@ class TestRegressionCorrectness:
 
 
 class TestRegressionNativeMatch:
-    """Spark transformer predictions must match omleruntime.predict()."""
+    """Spark transformer predictions must match omle_runtime.predict()."""
 
     def test_predictions_match_native(self, spark, regr_model_path, native_regr_model):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         test_rows = [(0.1, 0.0), (0.5, 0.0), (0.9, 0.0), (0.0, 0.0), (1.0, 0.0)]
         df = _make_regr_df(spark, test_rows)
         out = OMLEModel(modelPath=regr_model_path).transform(df)
@@ -213,7 +213,7 @@ _SOFTMAX_N1_0  = math.exp(-1) / (math.exp(2) + 1 + math.exp(-1))   # ≈ 0.0420
 
 class TestClassifierParams:
     def test_set_probability_col(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel(modelPath=class_model_path, probabilityCol="probs")
         assert m.getProbabilityCol() == "probs"
         df  = _make_class_df(spark, [(0.1, 0.0)])
@@ -221,7 +221,7 @@ class TestClassifierParams:
         assert "probs" in out.columns
 
     def test_set_prediction_col(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m   = OMLEModel(modelPath=class_model_path, predictionCol="cls")
         df  = _make_class_df(spark, [(0.1, 0.0)])
         out = m.transform(df)
@@ -231,7 +231,7 @@ class TestClassifierParams:
 
 class TestClassifierSchema:
     def test_probability_col_added(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         from pyspark.ml.linalg import VectorUDT
         df  = _make_class_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=class_model_path).transform(df)
@@ -239,7 +239,7 @@ class TestClassifierSchema:
         assert isinstance(out.schema["probability"].dataType, VectorUDT)
 
     def test_prediction_col_added(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         from pyspark.sql.types import DoubleType
         df  = _make_class_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=class_model_path).transform(df)
@@ -247,14 +247,14 @@ class TestClassifierSchema:
         assert isinstance(out.schema["prediction"].dataType, DoubleType)
 
     def test_probability_col_before_prediction_col(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df   = _make_class_df(spark, [(0.1, 0.0)])
         out  = OMLEModel(modelPath=class_model_path).transform(df)
         cols = out.columns
         assert cols.index("probability") < cols.index("prediction")
 
     def test_original_cols_preserved(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_class_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=class_model_path).transform(df)
         for col in ["f0", "f1", "features"]:
@@ -265,19 +265,19 @@ class TestClassifierCorrectness:
     """3-class model: feat0 < 0.5 → pred=0, feat0 >= 0.5 → pred=2."""
 
     def test_prediction_left(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_class_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=class_model_path).transform(df)
         assert out.select("prediction").collect()[0][0] == 0.0
 
     def test_prediction_right(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_class_df(spark, [(0.9, 0.0)])
         out = OMLEModel(modelPath=class_model_path).transform(df)
         assert out.select("prediction").collect()[0][0] == 2.0
 
     def test_proba_sums_to_one(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         rows = [(0.1, 0.0), (0.9, 0.0)]
         df   = _make_class_df(spark, rows)
         out  = OMLEModel(modelPath=class_model_path).transform(df)
@@ -286,14 +286,14 @@ class TestClassifierCorrectness:
             assert abs(s - 1.0) < 1e-5, f"probs sum to {s}"
 
     def test_proba_vector_size(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_class_df(spark, [(0.1, 0.0)])
         out = OMLEModel(modelPath=class_model_path).transform(df)
         vec = out.select("probability").collect()[0][0]
         assert len(vec) == 3
 
     def test_prediction_equals_argmax_of_proba(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         rows = [(0.1, 0.0), (0.9, 0.0), (0.5, 0.0)]
         df   = _make_class_df(spark, rows)
         out  = OMLEModel(modelPath=class_model_path).transform(df)
@@ -303,7 +303,7 @@ class TestClassifierCorrectness:
             assert r[1] == argmax, f"pred={r[1]} but argmax={argmax}, probs={probs}"
 
     def test_analytic_proba_left(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df   = _make_class_df(spark, [(0.1, 0.0)])
         out  = OMLEModel(modelPath=class_model_path).transform(df)
         prob = out.select("probability").collect()[0][0].toArray()
@@ -312,7 +312,7 @@ class TestClassifierCorrectness:
         assert abs(prob[2] - _SOFTMAX_N1_0) < 1e-4
 
     def test_analytic_proba_right(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df   = _make_class_df(spark, [(0.9, 0.0)])
         out  = OMLEModel(modelPath=class_model_path).transform(df)
         prob = out.select("probability").collect()[0][0].toArray()
@@ -321,24 +321,24 @@ class TestClassifierCorrectness:
         assert abs(prob[2] - _SOFTMAX_2_0)  < 1e-4
 
     def test_batch_multipartition(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         rows = [(float(i) / 20, 0.0) for i in range(20)]
         df   = _make_class_df(spark, rows).repartition(4)
         out  = OMLEModel(modelPath=class_model_path).transform(df)
         assert out.count() == 20
 
     def test_empty_dataframe(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         df  = _make_class_df(spark, [(0.1, 0.0)]).filter("f0 < 0")
         out = OMLEModel(modelPath=class_model_path).transform(df)
         assert out.count() == 0
 
 
 class TestClassifierNativeMatch:
-    """Spark transformer must match omleruntime.predict_proba()."""
+    """Spark transformer must match omle_runtime.predict_proba()."""
 
     def test_probability_matches_native(self, spark, class_model_path, native_class_model):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         test_rows = [(0.1, 0.0), (0.9, 0.0), (0.5, 0.0), (0.0, 0.0), (1.0, 0.0)]
         df  = _make_class_df(spark, test_rows)
         out = OMLEModel(modelPath=class_model_path).transform(df)
@@ -355,7 +355,7 @@ class TestClassifierNativeMatch:
                 err_msg=f"row ({f0},{f1}): spark={sp}, native={native_proba[i]}")
 
     def test_prediction_matches_native_argmax(self, spark, class_model_path, native_class_model):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         test_rows = [(0.1, 0.0), (0.9, 0.0), (0.5, 0.0)]
         df  = _make_class_df(spark, test_rows)
         out = OMLEModel(modelPath=class_model_path).transform(df)
@@ -380,27 +380,27 @@ class TestClassifierNativeMatch:
 
 class TestLoadFileFactory:
     def test_builds_a_usable_transformer(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         out = OMLEModel.loadFile(regr_model_path).transform(
             _make_regr_df(spark, [(0.1, 0.0)]))
         assert math.isclose(out.select("prediction").head()[0], 2.0, abs_tol=1e-4)
 
     def test_sets_model_path_param(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         m = OMLEModel.loadFile(regr_model_path)
         assert m.getModelPath() == regr_model_path
         # Must go through the Param, or copy() would drop the path.
         assert m.copy().getModelPath() == regr_model_path
 
     def test_equivalent_to_set_model_path(self, spark, regr_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         via_factory = OMLEModel.loadFile(regr_model_path)
         via_setter  = OMLEModel().setModelPath(regr_model_path)
         assert via_factory.getModelPath() == via_setter.getModelPath()
         assert via_factory.getFeaturesCol() == via_setter.getFeaturesCol()
 
     def test_missing_file_fails_immediately(self, spark, tmp_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         missing = str(tmp_path / "no_such_model.omle")
         with pytest.raises(Exception):
             OMLEModel.loadFile(missing)
@@ -408,7 +408,7 @@ class TestLoadFileFactory:
         assert OMLEModel(modelPath=missing).getModelPath() == missing
 
     def test_multi_output_model_keeps_both_columns(self, spark, class_model_path):
-        from omle.spark import OMLEModel
+        from omle_spark import OMLEModel
         out = OMLEModel.loadFile(class_model_path).transform(
             _make_class_df(spark, [(0.1, 0.0)]))
         assert "probability" in out.schema.fieldNames()

@@ -79,8 +79,11 @@ struct TreeEnsembleModel {
   PostTransform post_transform = PostTransform::Identity;
 
   std::vector<T> tree_weights;
-  T base_score = T(0);
-  bool has_base_score = false;
+  // Base scores added before post_transform. Empty when the model has none;
+  // otherwise either one value shared by every output, or one per output. A
+  // vector rather than a scalar because an ensemble may fit an intercept per
+  // class, and emptiness already encodes absence without a separate flag.
+  std::vector<T> base_scores;
 
   std::vector<int32_t> tree_group;
 

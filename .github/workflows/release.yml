@@ -92,7 +92,7 @@ jobs:
         # works on the build machine and fails everywhere else, so this is
         # checked before the artifact is ever uploaded.
         run: |
-          LIB="python/omleruntime/${{ matrix.lib }}"
+          LIB="python/omle_runtime/${{ matrix.lib }}"
           test -f "$LIB" || { echo "::error::$LIB was not built"; exit 1; }
           case "$RUNNER_OS" in
             Linux)  LEAKED=$(ldd "$LIB" | grep -ciE 'protobuf|absl' || true) ;;
@@ -119,7 +119,7 @@ jobs:
           python -c "
           import ctypes, os
           lib = os.path.join(r'${{ github.workspace }}', 'omle-runtime',
-                             'python', 'omleruntime', '${{ matrix.lib }}')
+                             'python', 'omle_runtime', '${{ matrix.lib }}')
           ctypes.CDLL(lib)
           print('loaded standalone:', lib)
           "
@@ -127,7 +127,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.target }}
-          path: omle-runtime/python/omleruntime/${{ matrix.lib }}
+          path: omle-runtime/python/omle_runtime/${{ matrix.lib }}
           if-no-files-found: error
           retention-days: 7
 

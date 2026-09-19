@@ -904,9 +904,9 @@ static std::unique_ptr<GraphNode> convert_tree_ensemble(
     }
   }();
   inp.post_transform = convert_pt(te.post_transform());
-  if (te.has_base_score()) {
-    inp.base_score = scalar_val(te.base_score()).as_double();
-    inp.has_base_score = true;
+  if (te.has_base_scores()) {
+    if (const P::Tensor* bs = unwrap_tv(te.base_scores(), raw))
+      extract_doubles(*bs, inp.base_scores);
   }
   if (te.has_tree_weights()) {
     if (const P::Tensor* tw = unwrap_tv(te.tree_weights(), raw))
@@ -925,6 +925,19 @@ static std::unique_ptr<GraphNode> convert_tree_ensemble(
   else
     inp.n_outputs = 1;
   if (inp.post_transform == PostTransform::SigmoidBinary) inp.n_outputs = 2;
+
+  // n_outputs is only known here, so the shape of base_scores is checked now.
+  // A length that is neither 1 nor n_outputs cannot be applied meaningfully,
+  // and quietly using part of it would shift every prediction by a constant --
+  // the exact failure this field replaced.
+  if (!inp.base_scores.empty() &&
+      inp.base_scores.size() != 1 &&
+      static_cast<int>(inp.base_scores.size()) != inp.n_outputs) {
+    throw std::runtime_error(
+        "omle: TreeEnsemble base_scores has " +
+        std::to_string(inp.base_scores.size()) + " values; expected 1 or " +
+        std::to_string(inp.n_outputs) + " (one per output)");
+  }
   inp.n_features = 0;
 
   const bool f64 = tree_ensemble_is_f64(te, raw);

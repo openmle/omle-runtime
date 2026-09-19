@@ -32,8 +32,8 @@ class TreeEnsembleTest : public ::testing::Test {
   static TreeEnsembleModel<T> make_model(
       std::vector<FlatTree<T>> trees, int n_features, int n_outputs,
       Aggregation agg = Aggregation::Sum,
-      PostTransform pt = PostTransform::Identity, T base_score = T(0),
-      bool has_base = false) {
+      PostTransform pt = PostTransform::Identity,
+      std::vector<T> base_scores = {}) {
     TreeEnsembleModel<T> m;
     m.trees = std::move(trees);
     m.n_trees = static_cast<int>(m.trees.size());
@@ -41,8 +41,7 @@ class TreeEnsembleTest : public ::testing::Test {
     m.n_outputs = n_outputs;
     m.aggregation = agg;
     m.post_transform = pt;
-    m.base_score = base_score;
-    m.has_base_score = has_base;
+    m.base_scores = std::move(base_scores);
     return m;
   }
 
@@ -134,7 +133,8 @@ TYPED_TEST(TreeEnsembleTest, AverageAggregation) {
 TYPED_TEST(TreeEnsembleTest, BaseScore) {
   auto m = this->make_model(
       {this->make_stump(TypeParam(5), TypeParam(0.1), TypeParam(0))}, 1, 1,
-      Aggregation::Sum, PostTransform::Identity, TypeParam(0.5), true);
+      Aggregation::Sum, PostTransform::Identity,
+      std::vector<TypeParam>{TypeParam(0.5)});
   auto exec = this->make_executor(m);
 
   TypeParam x = TypeParam(1);
@@ -143,7 +143,6 @@ TYPED_TEST(TreeEnsembleTest, BaseScore) {
 
   EXPECT_NEAR(output, TypeParam(0.6), TypeParam(1e-6));  // 0.5 + 0.1
 }
-
 TYPED_TEST(TreeEnsembleTest, SigmoidPostTransform) {
   auto m = this->make_model(
       {this->make_stump(TypeParam(5), TypeParam(0), TypeParam(0))}, 1, 1,

@@ -45,7 +45,7 @@ metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
 cmake.build-type = "Release"
 cmake.source-dir = ".."
 cmake.args = ["-DBUILD_PYTHON=ON", "-DBUILD_TESTS=OFF"]
-wheel.packages = ["omleruntime"]
+wheel.packages = ["omle_runtime"]
 
 # One CMake tree shared by every wheel, instead of a fresh temp directory per
 # build. protobuf and Abseil are pure C++ with no Python dependency, so they are
@@ -96,7 +96,7 @@ before-build = "python {package}/../scripts/clean_ext.py"
 
 # Import from a temporary directory, so a wheel that silently depends on the
 # source tree or on a system protobuf fails here rather than for a user.
-test-command = "python -c \"import omleruntime; print('wheel ok', omleruntime.__file__)\""
+test-command = "python -c \"import omle_runtime; print('wheel ok', omle_runtime.__file__)\""
 
 [tool.cibuildwheel.linux]
 # C++17 across protobuf, Abseil and this project. manylinux2014's gcc is old
@@ -112,12 +112,12 @@ manylinux-aarch64-image = "manylinux_2_28"
 # the build itself succeeded.
 #
 # --add-path points it at that directory. {package} is an absolute path to
-# python/, so the DLL is at {package}/omleruntime/omleruntime.dll.
+# python/, so the DLL is at {package}/omle_runtime/omleruntime.dll.
 #
 # The DLL is self-contained already (OMLE_BUNDLE_DEPS links protobuf and Abseil
 # statically), so there is nothing else for delvewheel to vendor beyond the
 # MSVC runtime, which it leaves alone by design.
-repair-wheel-command = "delvewheel repair --add-path {package}/omleruntime -w {dest_dir} -v {wheel}"
+repair-wheel-command = "delvewheel repair --add-path {package}/omle_runtime -w {dest_dir} -v {wheel}"
 
 [tool.cibuildwheel.macos]
 # Protobuf and Abseil require a newer minimum than cibuildwheel's default of

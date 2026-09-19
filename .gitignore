@@ -76,4 +76,4 @@
 /benchmark/results
 
 **/catboost_info
-/spark/python/omle/_version.py
+/spark/python/omle_spark/_version.py

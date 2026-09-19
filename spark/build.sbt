@@ -66,7 +66,7 @@ Compile / unmanagedJars ++= {
 
 Test / fork        := true
 Test / javaOptions ++= Seq(
-  s"-Djna.library.path=${(baseDirectory.value / ".." / "python" / "omleruntime").getAbsolutePath}",
+  s"-Djna.library.path=${(baseDirectory.value / ".." / "python" / "omle_runtime").getAbsolutePath}",
   // Spark 3.5 requires access to internal JDK classes on Java 17+
   "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
   "--add-opens=java.base/java.nio=ALL-UNNAMED",

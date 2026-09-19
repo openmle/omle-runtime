@@ -278,13 +278,13 @@ endforeach()
 # export table caps at 64k entries and this library exports ~2.3k, so there is
 # ample headroom.
 #
-# Everything lands in python/omleruntime/ because that is where the Python
+# Everything lands in python/omle_runtime/ because that is where the Python
 # package expects it and where the JVM bindings point JNA. ARCHIVE matters on
 # Windows: it is where the DLL's import library goes.
 #
 # The trailing `$<0:>` is load-bearing. Multi-config generators (Visual Studio,
 # Xcode) append a per-configuration subdirectory to a plain *_OUTPUT_DIRECTORY,
-# so the DLL would land in python/omleruntime/Release/ and neither the Python
+# so the DLL would land in python/omle_runtime/Release/ and neither the Python
 # package nor JNA would find it. An output directory containing a generator
 # expression suppresses that append; `$<0:>` expands to nothing, so the path is
 # unchanged everywhere else.
@@ -292,9 +292,9 @@ set_target_properties(omle_runtime PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   OUTPUT_NAME "omleruntime"
   WINDOWS_EXPORT_ALL_SYMBOLS ON
-  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime/$<0:>"
-  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime/$<0:>"
-  ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omleruntime/$<0:>")
+  LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omle_runtime/$<0:>"
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omle_runtime/$<0:>"
+  ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/omle_runtime/$<0:>")
 
 # -----------------------------------------------------------------------
 # Executables
@@ -328,7 +328,7 @@ add_executable(bench_c_api examples/bench_c_api.cpp)
 target_link_libraries(bench_c_api PRIVATE omle_runtime)
 
 # Same rpath gap as the test binaries: omleruntime.dll is built into
-# python/omleruntime/, so on Windows these executables cannot start unless the
+# python/omle_runtime/, so on Windows these executables cannot start unless the
 # DLL sits beside them. omle-predict and omle-benchmark are absent from this
 # list because they link the static runtime and carry no DLL dependency.
 if(WIN32)

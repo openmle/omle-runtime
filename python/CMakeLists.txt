@@ -34,10 +34,10 @@ if(pybind11_FOUND)
     # Windows included -- RUNTIME_OUTPUT_DIRECTORY only governs executables and
     # DLLs. The trailing `$<0:>` stops multi-config generators (Visual Studio,
     # Xcode) from appending a per-configuration subdirectory: without it the
-    # .pyd is written to omleruntime/Release/ and `from omleruntime import
+    # .pyd is written to omle_runtime/Release/ and `from omle_runtime import
     # omle_ext` fails even though the build succeeded.
     set_target_properties(omle_ext PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/omleruntime/$<0:>"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/omle_runtime/$<0:>"
     )
     add_dependencies(omle_ext omle_runtime)
 

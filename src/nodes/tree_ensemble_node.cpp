@@ -1084,12 +1084,25 @@ static void predict_impl(const TreeEnsembleModel<T>& model,
   const int n_out = model.n_outputs;
   const int n_feat = n_features > 0 ? n_features : model.n_features;
 
-  const T init_val = model.has_base_score ? model.base_score : T(0);
-  if (init_val == T(0))
-    std::memset(output, 0,
-                sizeof(T) * static_cast<std::size_t>(n_samples) * n_out);
-  else
-    std::fill(output, output + n_samples * n_out, init_val);
+  // Seed the accumulator with the base scores. One value covers every output;
+  // n_out values give each output its own intercept, which is what a
+  // multiclass ensemble carries. The loader has already rejected any other
+  // length.
+  const std::size_t total = static_cast<std::size_t>(n_samples) * n_out;
+  if (model.base_scores.empty()) {
+    std::memset(output, 0, sizeof(T) * total);
+  } else if (model.base_scores.size() == 1) {
+    const T init_val = model.base_scores[0];
+    if (init_val == T(0))
+      std::memset(output, 0, sizeof(T) * total);
+    else
+      std::fill(output, output + total, init_val);
+  } else {
+    // Per-output: repeat the same n_out-wide pattern down the batch.
+    for (int i = 0; i < n_samples; ++i)
+      std::copy(model.base_scores.begin(), model.base_scores.end(),
+                output + static_cast<std::size_t>(i) * n_out);
+  }
 
   if (model.aggregation == Aggregation::Min)
     std::fill(output, output + n_samples * n_out,
@@ -1420,8 +1433,9 @@ static TreeEnsembleModel<float> build_float_model(
   TreeEnsembleModel<float> m;
   m.aggregation = in.aggregation;
   m.post_transform = in.post_transform;
-  m.has_base_score = in.has_base_score;
-  m.base_score = static_cast<float>(in.base_score);
+  m.base_scores.resize(in.base_scores.size());
+  for (std::size_t i = 0; i < in.base_scores.size(); ++i)
+    m.base_scores[i] = static_cast<float>(in.base_scores[i]);
   m.tree_group = in.tree_group;
   m.n_features = in.n_features;
   m.n_outputs = in.n_outputs;

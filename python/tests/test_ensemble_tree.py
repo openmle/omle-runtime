@@ -1,7 +1,7 @@
 """Runtime prediction tests for XGBoost, LightGBM, and CatBoost tree ensembles.
 
 Covers: float32/float64 inputs, mixed-dtype DataFrame pipelines, and categorical
-string features.  Each model is converted to OMLE, loaded with omleruntime,
+string features.  Each model is converted to OMLE, loaded with omle_runtime,
 and verified to produce predictions identical to the native framework.
 """
 
@@ -14,7 +14,7 @@ import pytest
 pd = pytest.importorskip("pandas", reason="pandas not installed")
 
 omle          = pytest.importorskip("omle",           reason="omle not installed")
-omr              = pytest.importorskip("omleruntime",    reason="omleruntime not installed")
+omr              = pytest.importorskip("omle_runtime",    reason="omle_runtime not installed")
 omle_convert  = pytest.importorskip("omle_convert",  reason="omle_convert not installed")
 
 _RTOL = 1e-4

@@ -7,7 +7,7 @@ Score OMLE models on Spark DataFrames.
 rather than through a Python UDF.
 
 ```python
-from omle.spark import OMLEModel
+from omle_spark import OMLEModel
 
 model = OMLEModel(modelPath="/path/to/model.omle")
 predictions = model.transform(df)

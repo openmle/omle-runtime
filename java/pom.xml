@@ -49,7 +49,7 @@
     <revision>0.1.0-SNAPSHOT</revision>
     <jna.version>5.14.0</jna.version>
     <!-- Directory containing libomleruntime.dylib / libomleruntime.so -->
-    <omle.lib.dir>${project.basedir}/../python/omleruntime</omle.lib.dir>
+    <omle.lib.dir>${project.basedir}/../python/omle_runtime</omle.lib.dir>
   </properties>
 
   <dependencies>

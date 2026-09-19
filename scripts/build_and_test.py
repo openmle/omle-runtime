@@ -115,7 +115,7 @@ def build_java(run_tests: bool) -> None:
     goal = "test" if run_tests else "package"
 
     # Java tests load the shared library via JNA; point it at the built dylib.
-    lib_dir = ROOT / "python" / "omleruntime"
+    lib_dir = ROOT / "python" / "omle_runtime"
     run([mvn, goal,
          f"-Djna.library.path={lib_dir}",
          "--no-transfer-progress"],
@@ -139,7 +139,7 @@ def build_spark(run_tests: bool) -> None:
         build_java(run_tests=False)
 
     sbt = find_executable("sbt")
-    lib_dir = ROOT / "python" / "omleruntime"
+    lib_dir = ROOT / "python" / "omle_runtime"
     task = "test" if run_tests else "package"
 
     run([sbt,

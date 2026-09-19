@@ -8,7 +8,7 @@ linked in statically, so there is nothing to install alongside.
 
 ```python
 import numpy as np
-import omleruntime as omr
+import omle_runtime as omr
 
 model = omr.load("model.omle", n_threads=4)   # thread-safe
 X = np.random.randn(1000, 10).astype(np.float32)

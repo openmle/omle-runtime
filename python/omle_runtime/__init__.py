@@ -1,5 +1,5 @@
 """
-omleruntime — fast inference for classical ML models.
+omle_runtime — fast inference for classical ML models.
 
 pybind11 bindings over the omle C API.  Requires the compiled
 omle_ext extension module (built with cmake -DBUILD_PYTHON=ON).
@@ -12,7 +12,7 @@ present, so ``Model`` can be used as the final step of a
 
 Quick start::
 
-    import omleruntime as omr
+    import omle_runtime as omr
     import numpy as np
 
     model   = omr.load("model.omle", n_threads=4)   # thread-safe
@@ -83,15 +83,15 @@ if sys.platform == "win32":
 
 # pybind11 extension — required
 try:
-    from omleruntime import omle_ext as _ext
+    from omle_runtime import omle_ext as _ext
 except ImportError as _e:
     raise ImportError(
-        "omleruntime: could not import the pybind11 extension 'omle_ext'.\n"
+        "omle_runtime: could not import the pybind11 extension 'omle_ext'.\n"
         f"Underlying error: {_e}\n"
         "If the module is missing, build it with:\n"
         "    cmake -DBUILD_PYTHON=ON .. && cmake --build . --target omle_ext\n"
         "If it was found but failed to load, a dependent shared library "
-        "(omleruntime, protobuf, Abseil) is not on the loader's search path; "
+        "(omle_runtime, protobuf, Abseil) is not on the loader's search path; "
         "on Windows point OMLE_RUNTIME_DLL_PATH at the directory holding them."
     ) from _e
 
@@ -355,7 +355,7 @@ class Tensor:
 
     def __repr__(self) -> str:
         tag = f"'{self.name}'" if self.name else "unnamed"
-        return f"<omleruntime.Tensor {tag} shape={self.shape}>"
+        return f"<omle_runtime.Tensor {tag} shape={self.shape}>"
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +828,7 @@ class Session:
         return t
 
     def __repr__(self) -> str:
-        return f"<omleruntime.Session features={self.num_inputs} outputs={self.num_outputs}>"
+        return f"<omle_runtime.Session features={self.num_inputs} outputs={self.num_outputs}>"
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +845,8 @@ def load(path: str, *, n_threads: int = 1, min_parallel_rows: int = 64) -> Model
     n_threads : int
         Worker threads for ``model.predict()`` (0 = auto).
     min_parallel_rows : int
-        Minimum rows per thread before parallelism activates.
+        Minimum rows per thread before parallelism activates; a batch is split
+        only once it holds ``n_threads * min_parallel_rows`` rows.
     """
     return Model.load(path, n_threads=n_threads, min_parallel_rows=min_parallel_rows)
 

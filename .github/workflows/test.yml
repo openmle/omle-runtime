@@ -4,7 +4,7 @@ name: Tests
 # first. The dependency chain is:
 #
 #   C++ (libomleruntime — one shared library, C++ API + C ABI)
-#     ├── omleruntime   (Python, scikit-build-core)
+#     ├── omle_runtime   (Python, scikit-build-core)
 #     ├── Java          (JNA → libomleruntime)     → omle-runtime.jar
 #     │     └── Scala   (reads the Java jar)       → omle-spark.jar
 #     │           └── omle-spark (PySpark, needs both jars + libomleruntime)
@@ -117,7 +117,7 @@ jobs:
         run: ctest --output-on-failure --build-config Release
 
   # ---------------------------------------------------------------------------
-  # 2. Python — omleruntime. Built from source by scikit-build-core, so it
+  # 2. Python — omle_runtime. Built from source by scikit-build-core, so it
   #    needs the same native toolchain as the C++ job.
   # ---------------------------------------------------------------------------
   python:
@@ -179,7 +179,7 @@ jobs:
           #
           # PATH alone is enough for the executables ctest runs, but not for the
           # Python extension: since 3.8 CPython resolves an extension module's
-          # dependent DLLs without consulting PATH. omleruntime/__init__.py
+          # dependent DLLs without consulting PATH. omle_runtime/__init__.py
           # re-registers these entries with os.add_dll_directory() before
           # importing omle_ext, which is what makes this line work there.
           echo "${{ github.workspace }}/conda-deps/Library/bin" >> "$GITHUB_PATH"
@@ -198,7 +198,7 @@ jobs:
         shell: bash
         # tests/conftest.py puts python/ first on sys.path, so the suite imports
         # the source tree rather than an installed wheel. BUILD_PYTHON drops
-        # omle_ext and libomleruntime straight into python/omleruntime/, which is
+        # omle_ext and libomleruntime straight into python/omle_runtime/, which is
         # what that import needs.
         run: |
           EXTRA=""
@@ -213,7 +213,7 @@ jobs:
       - name: Check the native library landed where consumers look
         shell: bash
         # Both the Python package and JNA load the library from
-        # python/omleruntime/ by that exact literal path, and nothing in the
+        # python/omle_runtime/ by that exact literal path, and nothing in the
         # build enforces it. When a multi-config generator last slipped a
         # per-config subdirectory in between, the build stayed green and the
         # failure surfaced two steps later as a 200-line UnsatisfiedLinkError
@@ -224,16 +224,16 @@ jobs:
             macOS)   LIB=libomleruntime.dylib ;;
             *)       LIB=libomleruntime.so ;;
           esac
-          if [ ! -f "python/omleruntime/$LIB" ]; then
-            echo "::error::python/omleruntime/$LIB is missing. Built artifacts:"
-            find python/omleruntime -name '*omleruntime*' -o -name 'omle_ext*'
+          if [ ! -f "python/omle_runtime/$LIB" ]; then
+            echo "::error::python/omle_runtime/$LIB is missing. Built artifacts:"
+            find python/omle_runtime -name '*omleruntime*' -o -name 'omle_ext*'
             exit 1
           fi
           # The .pyd/.so name is interpreter- and platform-specific, so match
-          # the prefix that `from omleruntime import omle_ext` resolves.
-          if ! ls python/omleruntime/omle_ext* >/dev/null 2>&1; then
-            echo "::error::no omle_ext extension module in python/omleruntime/"
-            find python/omleruntime -name 'omle_ext*'
+          # the prefix that `from omle_runtime import omle_ext` resolves.
+          if ! ls python/omle_runtime/omle_ext* >/dev/null 2>&1; then
+            echo "::error::no omle_ext extension module in python/omle_runtime/"
+            find python/omle_runtime -name 'omle_ext*'
             exit 1
           fi
 
@@ -266,7 +266,7 @@ jobs:
           fi
           pip install ./python
           # Run from elsewhere so the source tree cannot satisfy the import.
-          cd "$RUNNER_TEMP" && python -c "import omleruntime; print('wheel ok')"
+          cd "$RUNNER_TEMP" && python -c "import omle_runtime; print('wheel ok')"
 
   # ---------------------------------------------------------------------------
   # 3. Java — io.github.openmle.runtime. JNA loads libomleruntime at run time, so
@@ -344,7 +344,7 @@ jobs:
       - name: Check the native library landed where consumers look
         shell: bash
         # Both the Python package and JNA load the library from
-        # python/omleruntime/ by that exact literal path, and nothing in the
+        # python/omle_runtime/ by that exact literal path, and nothing in the
         # build enforces it. When a multi-config generator last slipped a
         # per-config subdirectory in between, the build stayed green and the
         # failure surfaced two steps later as a 200-line UnsatisfiedLinkError
@@ -355,9 +355,9 @@ jobs:
             macOS)   LIB=libomleruntime.dylib ;;
             *)       LIB=libomleruntime.so ;;
           esac
-          if [ ! -f "python/omleruntime/$LIB" ]; then
-            echo "::error::python/omleruntime/$LIB is missing. Built artifacts:"
-            find python/omleruntime -name '*omleruntime*' -o -name 'omle_ext*'
+          if [ ! -f "python/omle_runtime/$LIB" ]; then
+            echo "::error::python/omle_runtime/$LIB is missing. Built artifacts:"
+            find python/omle_runtime -name '*omleruntime*' -o -name 'omle_ext*'
             exit 1
           fi
 
@@ -366,7 +366,7 @@ jobs:
         shell: bash
         # The build drops the library next to the Python package; that
         # directory is what JNA has to search.
-        run: mvn -B test -Djna.library.path="$GITHUB_WORKSPACE/omle-runtime/python/omleruntime"
+        run: mvn -B test -Djna.library.path="$GITHUB_WORKSPACE/omle-runtime/python/omle_runtime"
 
   # ---------------------------------------------------------------------------
   # 3b. Self-contained build — OMLE_BUNDLE_DEPS.
@@ -420,17 +420,17 @@ jobs:
         run: |
           case "$RUNNER_OS" in
             Linux)
-              LIB=python/omleruntime/libomleruntime.so
+              LIB=python/omle_runtime/libomleruntime.so
               ldd "$LIB" || true
               LEAKED=$(ldd "$LIB" | grep -ciE 'protobuf|absl' || true)
               ;;
             macOS)
-              LIB=python/omleruntime/libomleruntime.dylib
+              LIB=python/omle_runtime/libomleruntime.dylib
               otool -L "$LIB" || true
               LEAKED=$(otool -L "$LIB" | grep -ciE 'protobuf|absl' || true)
               ;;
             *)
-              LIB=python/omleruntime/omleruntime.dll
+              LIB=python/omle_runtime/omleruntime.dll
               LEAKED=0
               ;;
           esac
@@ -453,7 +453,7 @@ jobs:
         run: |
           python -c "
           import ctypes, os, sys
-          lib = os.path.join(r'${{ github.workspace }}', 'omle-runtime', 'python', 'omleruntime',
+          lib = os.path.join(r'${{ github.workspace }}', 'omle-runtime', 'python', 'omle_runtime',
                              {'win32': 'omleruntime.dll'}.get(sys.platform,
                              'libomleruntime.dylib' if sys.platform == 'darwin' else 'libomleruntime.so'))
           ctypes.CDLL(lib)
@@ -526,7 +526,7 @@ jobs:
         # because a later -D of the same key takes precedence.
         run: |
           sbt -batch \
-            "set Test/javaOptions += \"-Djna.library.path=$GITHUB_WORKSPACE/omle-runtime/python/omleruntime\"" \
+            "set Test/javaOptions += \"-Djna.library.path=$GITHUB_WORKSPACE/omle-runtime/python/omle_runtime\"" \
             +test
 
   # ---------------------------------------------------------------------------
@@ -587,7 +587,7 @@ jobs:
         shell: bash
         # BUILD_PYTHON is on because the native-match tests compare the Spark
         # transformer's output against the runtime itself, which conftest.py
-        # reaches by importing omleruntime from the source tree. That import
+        # reaches by importing omle_runtime from the source tree. That import
         # needs omle_ext, so without this target those tests cannot run.
         run: |
           python -m pip install --upgrade pip

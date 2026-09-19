@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Remove previously built extension modules from the Python package directory.
 
-CMake writes omle_ext into python/omleruntime/ (the source tree, not the build
+CMake writes omle_ext into python/omle_runtime/ (the source tree, not the build
 tree), because the in-place developer workflow and the JVM bindings both expect
 the library and the extension to live there. scikit-build-core's
 wheel.packages then copies that directory verbatim into the wheel.
@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-PACKAGE_DIR = Path(__file__).resolve().parent.parent / "python" / "omleruntime"
+PACKAGE_DIR = Path(__file__).resolve().parent.parent / "python" / "omle_runtime"
 
 # Only the extension modules. The shared library is left alone: it has one name
 # per platform, every interpreter overwrites the same file, and the wheel needs

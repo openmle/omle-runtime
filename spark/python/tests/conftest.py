@@ -2,7 +2,7 @@
 
 Requires:
   - omle-spark JAR (built with `sbt package`)
-  - omleruntime Python package (for native-match tests)
+  - omle_runtime Python package (for native-match tests)
   - PySpark 3.x
 
 Tests are skipped automatically when the JAR is not found.
@@ -22,7 +22,7 @@ _HERE         = Path(__file__).parent
 _SPARK_ROOT   = _HERE.parent.parent            # omle-runtime/spark/
 _OMLE_ROOT    = _SPARK_ROOT.parent             # omle-runtime/
 _RESOURCES    = _SPARK_ROOT / "src" / "test" / "resources"
-_NATIVE_LIB   = _OMLE_ROOT / "python" / "omleruntime"
+_NATIVE_LIB   = _OMLE_ROOT / "python" / "omle_runtime"
 def _newest_runtime_jar():
     """The omle-runtime jar, whatever version it was built as.
 
@@ -242,13 +242,13 @@ def class_model_path():
 
 
 # ---------------------------------------------------------------------------
-# Native omleruntime models (for match tests)
+# Native omle_runtime models (for match tests)
 # ---------------------------------------------------------------------------
 
-def _import_omleruntime():
+def _import_omle_runtime():
     """Import the native package, or skip — it needs a compiled extension.
 
-    omleruntime is only importable once omle_ext has been built, which takes
+    omle_runtime is only importable once omle_ext has been built, which takes
     -DBUILD_PYTHON=ON. Without this the missing extension surfaces as a fixture
     ERROR carrying the package's whole module docstring, which reads like a
     failure of the code under test rather than a build that skipped a target.
@@ -256,10 +256,10 @@ def _import_omleruntime():
     import sys
     sys.path.insert(0, str(_NATIVE_LIB.parent))
     try:
-        import omleruntime as omr
+        import omle_runtime as omr
     except ImportError as exc:
         pytest.skip(
-            "omleruntime is not importable, so the Spark output cannot be "
+            "omle_runtime is not importable, so the Spark output cannot be "
             f"compared against the native runtime ({exc}). Build it with: "
             "cmake -S . -B build -DBUILD_PYTHON=ON && "
             "cmake --build build --target omle_ext"
@@ -269,11 +269,11 @@ def _import_omleruntime():
 
 @pytest.fixture(scope="session")
 def native_regr_model(regr_model_path):
-    """Loaded omleruntime Model for the regression fixture."""
-    return _import_omleruntime().load(regr_model_path)
+    """Loaded omle_runtime Model for the regression fixture."""
+    return _import_omle_runtime().load(regr_model_path)
 
 
 @pytest.fixture(scope="session")
 def native_class_model(class_model_path):
-    """Loaded omleruntime Model for the 3-class classifier fixture."""
-    return _import_omleruntime().load(class_model_path)
+    """Loaded omle_runtime Model for the 3-class classifier fixture."""
+    return _import_omle_runtime().load(class_model_path)
