@@ -11,8 +11,8 @@
 // records were scored and where they went. Omitting the output path scores the
 // input and reports on it without writing anything.
 
-#include <cstdio>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -119,10 +119,9 @@ int main(int argc, char* argv[]) {
 
   const auto t0 = std::chrono::steady_clock::now();
   auto run_st = session->run();
-  const auto elapsed_ms =
-      std::chrono::duration<double, std::milli>(
-          std::chrono::steady_clock::now() - t0)
-          .count();
+  const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count();
   if (!run_st.ok()) {
     std::fprintf(stderr, "Error running inference: %s\n",
                  run_st.message().c_str());
@@ -144,11 +143,10 @@ int main(int argc, char* argv[]) {
 
   // Scoring is done at this point, so report it before the write: if the write
   // then fails, the summary is still an accurate account of what happened.
-  std::printf("\nScored %d record%s (%d feature%s in, %zu column%s out) in %.2f ms\n",
-              n_rows, n_rows == 1 ? "" : "s",
-              n_feat, n_feat == 1 ? "" : "s",
-              col_names.size(), col_names.size() == 1 ? "" : "s",
-              elapsed_ms);
+  std::printf(
+      "\nScored %d record%s (%d feature%s in, %zu column%s out) in %.2f ms\n",
+      n_rows, n_rows == 1 ? "" : "s", n_feat, n_feat == 1 ? "" : "s",
+      col_names.size(), col_names.size() == 1 ? "" : "s", elapsed_ms);
 
   if (argc >= 4) {
     const char* out_path = argv[3];

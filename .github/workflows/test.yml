@@ -40,6 +40,39 @@ jobs:
       - run: python3 scripts/check_portability.py .
 
   # ---------------------------------------------------------------------------
+  # 0b. Style — runs .pre-commit-config.yaml, the same file the local git hook
+  #     runs, so the two cannot drift. --all-files because a locally installed
+  #     hook only ever sees staged files, and nothing guarantees a contributor
+  #     installed it at all.
+  #
+  #     clang-format is the one that matters here: without a .clang-format in
+  #     the repo it silently falls back to LLVM style and rewrites every C++
+  #     file, so this job is also what keeps that config present and correct.
+  #     No CMake and no sibling omle checkout — nothing here compiles.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          # Checked out under omle-runtime/, so the glob needs that prefix —
+          # hashFiles resolves against the workspace root, not working-directory.
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('omle-runtime/.pre-commit-config.yaml') }}
+      - run: pip install pre-commit
+      # --show-diff-on-failure prints the patch the autofixing hooks would have
+      # applied, so a red build hands back the fix instead of just a rule name.
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  # ---------------------------------------------------------------------------
   # 1. C++ — the runtime itself, on all three platforms.
   # ---------------------------------------------------------------------------
   cpp:

@@ -515,4 +515,3 @@ class OMLEModelSpec extends AnyFunSuite with BeforeAndAfterAll {
     assert(result.schema.fieldNames.contains("prediction"))
   }
 }
-

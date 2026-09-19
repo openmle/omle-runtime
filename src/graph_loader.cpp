@@ -930,8 +930,7 @@ static std::unique_ptr<GraphNode> convert_tree_ensemble(
   // A length that is neither 1 nor n_outputs cannot be applied meaningfully,
   // and quietly using part of it would shift every prediction by a constant --
   // the exact failure this field replaced.
-  if (!inp.base_scores.empty() &&
-      inp.base_scores.size() != 1 &&
+  if (!inp.base_scores.empty() && inp.base_scores.size() != 1 &&
       static_cast<int>(inp.base_scores.size()) != inp.n_outputs) {
     throw std::runtime_error(
         "omle: TreeEnsemble base_scores has " +
