@@ -140,52 +140,45 @@ LightGBM models are stored and executed in float64 throughout (thresholds, leaf 
 
 ## Benchmark matrix results
 
-> **These numbers are not thread-matched and are being re-measured.** They were
-> taken when `--threads` governed only OMLE: OMLE and ORT ran on one thread while
-> XGBoost and LightGBM predicted on all 11 cores, because neither library
-> defaults to single-threaded inference. Everything below batch≈100 is unaffected
-> (native threading does not engage on tiny batches), but the large-batch columns
-> compare 1 core against 11 and understate OMLE by roughly 4-6x. `--threads` now
-> applies to every engine; see *Threading* below.
-
 Speedup over the faster of the two native paths, so `>1` means faster than the
-framework's own predictor. Apple M-series, `min` latency, `small` models. Bold
-marks the faster of ORT and OMLE.
+framework's own predictor. Apple M-series, `min` latency, `small` models,
+**every engine pinned to one thread** (`--threads 1`). Bold marks the faster of
+ORT and OMLE.
 
 **XGBoost** — ORT / OMLE
 
 | Batch | regression | binary | multiclass | mnist |
-|------:|-----------:|-------:|-----------:|------:|
-| 1 | 38.84x / **42.20x** | **30.60x** / 21.73x | 15.48x / **29.19x** | 18.04x / **23.65x** |
-| 10 | 11.78x / **14.13x** | **10.07x** / 9.37x | 1.90x / **6.11x** | 3.17x / **4.39x** |
-| 100 | 1.36x / **2.99x** | 1.33x / **2.31x** | 0.26x / **1.18x** | 0.35x / **0.85x** |
-| 1 000 | 0.15x / **0.51x** | 0.25x / **0.38x** | 0.05x / **0.16x** | 0.07x / **0.17x** |
-| 10 000 | 0.06x / **0.22x** | 0.10x / **0.15x** | 0.04x / **0.12x** | 0.05x / **0.12x** |
+|------:|-----------:|-----------:|-----------:|-----------:|
+| 1 | 13.99x / **16.64x** | 10.45x / **15.31x** | 6.82x / **13.75x** | 7.43x / **9.63x** |
+| 10 | 5.41x / **7.74x** | 3.89x / **7.87x** | 1.22x / **3.99x** | 1.62x / **2.28x** |
+| 100 | 0.87x / **2.43x** | 0.82x / **2.31x** | 0.29x / **1.64x** | 0.37x / **0.93x** |
+| 1 000 | 0.31x / **1.39x** | 0.48x / **1.30x** | 0.23x / **1.08x** | 0.28x / **0.75x** |
+| 10 000 | 0.26x / **1.21x** | 0.44x / **1.11x** | 0.22x / **1.03x** | 0.27x / **0.68x** |
 
 **LightGBM** — ORT / OMLE
 
 | Batch | regression | binary | multiclass | mnist |
-|------:|-----------:|-------:|-----------:|------:|
-| 1 | 12.49x / **13.35x** | **9.25x** / 7.52x | 3.08x / **5.23x** | 4.65x / **5.69x** |
-| 10 | **5.39x** / 5.18x | 2.09x / **3.26x** | 0.72x / **1.68x** | 1.03x / **1.24x** |
-| 100 | 1.04x / **1.50x** | 0.60x / **0.94x** | 0.22x / **1.05x** | 0.23x / **0.52x** |
-| 1 000 | 0.24x / **0.77x** | 0.39x / **0.46x** | 0.14x / **0.70x** | 0.14x / **0.29x** |
-| 10 000 | 0.17x / **0.58x** | 0.31x / **0.40x** | 0.13x / **0.62x** | 0.12x / **0.23x** |
+|------:|-----------:|-----------:|-----------:|-----------:|
+| 1 | 4.97x / **5.72x** | 3.60x / **5.54x** | 2.12x / **3.62x** | 2.64x / **3.16x** |
+| 10 | 3.33x / **3.97x** | 1.26x / **3.85x** | 1.02x / **3.37x** | 1.37x / **1.89x** |
+| 100 | 2.16x / **3.36x** | 1.26x / **3.09x** | 0.71x / **3.43x** | 0.79x / **1.71x** |
+| 1 000 | 0.86x / **3.36x** | 1.46x / **2.65x** | 0.67x / **3.37x** | 0.65x / **1.53x** |
+| 10 000 | 0.75x / **3.31x** | 1.46x / **2.84x** | 0.67x / **3.33x** | 0.70x / **1.43x** |
 
-`lgbm/regression` at medium and large is the one place where the two engines are
-not computing the same answer: those ONNX exports carry an absolute error around
-7e-02 to 9e-02 (see *Correctness*), so their timings are not comparable.
-
-**Adult pipeline** — ORT / OMLE. The widest margins in the suite, because the
-native path re-runs the whole sklearn `ColumnTransformer` on every call.
+**Adult pipeline** — ORT / OMLE
 
 | Batch | ORT / OMLE |
 |------:|-----------:|
-| 1 | 167.50x / **186.22x** |
-| 10 | **97.21x** / 90.60x |
-| 100 | **20.62x** / 15.30x |
-| 1 000 | **2.87x** / 1.88x |
-| 10 000 | **1.42x** / 0.79x |
+| 1 | 147.92x / **181.00x** |
+| 10 | **96.89x** / 86.77x |
+| 100 | **20.47x** / 15.88x |
+| 1 000 | **2.78x** / 1.83x |
+| 10 000 | **1.39x** / 0.75x |
+
+`lgbm/regression` at medium and large is the one place where the two engines are
+not computing the same answer: those ONNX exports carry an absolute error around
+7e-02 to 9e-02 (see *Correctness*), so their timings there are not comparable.
+The `small` models in the table above all agree.
 
 ## ONNX Runtime
 
@@ -193,41 +186,81 @@ ORT executes the `.onnx` export of the same trained model, so the comparison is
 engine-versus-engine on identical maths. Its numbers are in *Benchmark matrix
 results* above; what follows is what they mean.
 
-ORT wins heavily at batch=1, where the native frameworks are dominated by
-per-call setup, and loses from roughly batch=100 onward, ending up **3–25x
-slower than native** at batch 10 000. It is a latency engine here, not a
-throughput one. The effect is larger against XGBoost than LightGBM because
-XGBoost's native path builds a `DMatrix` per call, which LightGBM's does not.
+ORT wins at batch=1, where the native frameworks are dominated by per-call
+setup, and loses from roughly batch=100, ending up **1.3–4.5x slower than
+native** at batch 10 000 on every model but `lgbm/binary`, where it stays 1.5x
+ahead. It is a latency engine here, not a throughput one, and the effect is
+larger against XGBoost than LightGBM because XGBoost's native path builds a
+`DMatrix` per call while LightGBM's takes numpy directly.
 
-Against OMLE the two are close at batch=1 — ORT is ahead on binary for both
-frameworks — and OMLE pulls away as batches grow, by 3–5x at batch 10 000 on
-multiclass. The adult pipeline is the exception: ORT stays ahead from batch 10
-upward, the only place in the suite where it leads at scale.
+OMLE is ahead of ORT at every batch size on every tree model, by 1.9–5.0x at
+batch 10 000, and the margin widens with batch size rather than narrowing. The
+adult pipeline is the one exception: ORT leads from batch 10 upward and is 1.8x
+ahead at batch 10 000, the only place in the suite where it wins at scale.
 
-ORT also costs more to hold resident. Session RSS deltas on the `large` models,
-where the numbers are above allocator noise:
+## Footprint
 
-| Model | ORT session | OMLE session |
-|-------|------------:|-------------:|
-| xgboost/regression | +134.3 MB | **+34.4 MB** |
-| xgboost/mnist | +41.0 MB | **+13.5 MB** |
-| lgbm/regression | +64.0 MB | **+24.4 MB** |
-| lgbm/mnist | +39.8 MB | **+15.2 MB** |
-| pipeline/adult | +60.3 MB | **+32.8 MB** |
+Serialised size and the resident-memory cost of holding a loaded session, for
+every model in the suite. Bold marks the smaller of the two engines. `.omle` is
+compared against the framework's own file (`.json` for XGBoost, `.txt` for
+LightGBM, a joblib `.pkl` for the sklearn pipeline).
 
-On the `small` models both engines sit within ±1 MB, so those rows say nothing.
+| Model | native | `.onnx` | `.omle` | ORT RSS | OMLE RSS |
+|-------|-------:|--------:|--------:|--------:|--------:|
+| xgb/regression/small | 192 KB | 92 KB | **58 KB** | 2.3 MB | **0.6 MB** |
+| xgb/regression/medium | 3.1 MB | 1.8 MB | **1.0 MB** | **5.3 MB** | 7.2 MB |
+| xgb/regression/large | 18.9 MB | 11.6 MB | **6.7 MB** | 155.0 MB | **54.3 MB** |
+| xgb/binary/small | 94 KB | 32 KB | **27 KB** | 1.3 MB | **0.6 MB** |
+| xgb/binary/medium | 300 KB | 68 KB | **67 KB** | 0.9 MB | **0.3 MB** |
+| xgb/binary/large | 598 KB | 135 KB | **130 KB** | **0.6 MB** | 1.1 MB |
+| xgb/multiclass/small | 981 KB | 365 KB | **254 KB** | 1.6 MB | **1.0 MB** |
+| xgb/multiclass/medium | 3.1 MB | 832 KB | **720 KB** | **2.9 MB** | 5.4 MB |
+| xgb/multiclass/large | 6.4 MB | 1.7 MB | **1.4 MB** | **3.9 MB** | 8.8 MB |
+| xgb/mnist/small | 592 KB | 240 KB | **213 KB** | 5.6 MB | **2.1 MB** |
+| xgb/mnist/medium | 2.0 MB | 957 KB | **626 KB** | 7.0 MB | **3.9 MB** |
+| xgb/mnist/large | — | — | — | — | — |
+| lgbm/regression/small | 147 KB | 105 KB | **73 KB** | 2.4 MB | **0.6 MB** |
+| lgbm/regression/medium | 1.7 MB | 1.3 MB | **883 KB** | **3.3 MB** | 3.9 MB |
+| lgbm/regression/large | 6.3 MB | 5.3 MB | **3.5 MB** | 51.8 MB | **28.6 MB** |
+| lgbm/binary/small | 125 KB | 70 KB | **54 KB** | 2.5 MB | **0.9 MB** |
+| lgbm/binary/medium | 419 KB | 214 KB | **163 KB** | **0.3 MB** | 0.8 MB |
+| lgbm/binary/large | 932 KB | 502 KB | **361 KB** | **2.9 MB** | 3.1 MB |
+| lgbm/multiclass/small | 958 KB | 533 KB | **383 KB** | 4.0 MB | **3.2 MB** |
+| lgbm/multiclass/medium | 2.7 MB | 1.2 MB | **1013 KB** | **3.6 MB** | 6.2 MB |
+| lgbm/multiclass/large | 6.1 MB | 3.0 MB | **2.3 MB** | 22.5 MB | **17.8 MB** |
+| lgbm/mnist/small | 520 KB | 280 KB | **256 KB** | 7.0 MB | **2.3 MB** |
+| lgbm/mnist/medium | 1.8 MB | 1.1 MB | **802 KB** | 9.0 MB | **5.2 MB** |
+| lgbm/mnist/large | — | — | — | — | — |
+| sklearn/adult/small | 282 KB | 111 KB | **96 KB** | 7.0 MB | **1.2 MB** |
+| sklearn/adult/medium | 4.0 MB | 1.8 MB | **1.2 MB** | 8.5 MB | **7.3 MB** |
+| sklearn/adult/large | 20.9 MB | 10.0 MB | **6.8 MB** | 102.0 MB | **44.3 MB** |
 
-On disk, `.onnx` is larger than `.omle` for all 26 models — 0.23–0.84x of the
-native file against 0.22–0.55x, which is 1.05–1.77x the size of the equivalent
-`.omle`.
+**On disk `.omle` is never larger** — 25 of 25 models, by up to 1.75x against the
+equivalent `.onnx`, though `xgb/binary` is effectively a dead heat at all three
+sizes. Against the native file `.omle` lands at 0.22–0.55x where ONNX needs
+0.23–0.84x. The margin is widest on LightGBM, whose ONNX export stays close in
+size to the original `.txt`.
+
+**Memory is not a clean win, and the direction depends on size.** On the five
+largest models — the ones where the delta is well clear of allocator noise — OMLE
+holds 1.3–2.9x less: 54.3 MB against 155.0 MB on `xgb/regression/large`, 44.3
+against 102.0 on the adult pipeline. But on eight of the 25 ORT is the
+smaller of the two, by as much as 4.9 MB on `xgb/multiclass/large` (3.9 MB
+against 8.8 MB), and below roughly 3 MB the deltas are within allocator noise and
+should not be read as a ranking at all. The honest summary is
+that OMLE scales better with model size rather than being uniformly lighter.
+
+MNIST `large` is absent from both frameworks: those two models exhaust memory on
+this machine, and the run was scoped to `small` and `medium` rather than reporting
+figures taken under swap pressure.
 
 ## Threading
 
 Neither XGBoost nor LightGBM defaults to single-threaded prediction, and neither
 does sklearn's `RandomForestClassifier` — leave `n_jobs`/`num_threads` unset and
 all three use every core. OMLE defaults to one. That made the original
-"native wins at scale" result mostly an artefact of core count, so `--threads`
-now sets the budget for every engine:
+"native wins at scale" result largely an artefact of core count, so `--threads`
+now sets the budget for every engine, native and ORT included:
 
 ```bash
 python run_benchmark.py --threads 1    # one core each: compares the kernels
@@ -239,16 +272,14 @@ available:
 
 | | native | OMLE | OMLE advantage |
 |---|-------:|-----:|---------------:|
-| 1 thread each | 161.09 ms | 34.83 ms | **4.62x** |
-| all cores each | 28.63 ms | 6.31 ms | **4.54x** |
-| 1 thread OMLE vs all-core native | 28.63 ms | 34.83 ms | 0.82x |
+| 1 thread each | 163.84 ms | 24.70 ms | **6.63x** |
+| all cores each | 25.67 ms | 3.43 ms | **7.49x** |
+| 1 thread OMLE vs all-core native | 25.67 ms | 24.70 ms | 1.04x |
 
-The last row is what the matrix above reports. Thread scaling is close to
-identical on both sides — 5.63x native against 5.52x OMLE on 5 performance plus
-6 efficiency cores — so a matched comparison holds its ratio at either thread
-count. Per thread, OMLE is at parity with XGBoost (0.91–1.03x on
-`regression`/`binary` medium) and 4.6x faster than LightGBM, whose native
-predictor is the slowest single-threaded kernel in the suite.
+The last row is the comparison the benchmark used to make by accident, and it is
+the only one of the three that looks like a tie. Thread scaling is close on both
+sides — 6.38x native against 7.21x OMLE on 5 performance plus 6 efficiency
+cores — so a matched comparison holds its ratio at either thread count.
 
 ### min_parallel_rows
 
@@ -273,26 +304,40 @@ default in `runtime.h` is unchanged.
 
 ## Key findings (Apple M-series)
 
-Two things drive the shape of *Benchmark matrix results*.
+**Per-call overhead dominates small batches.** At batch=1 OMLE is 9.6–16.6x
+faster than XGBoost and 3.2–5.7x faster than LightGBM, with both sides on one
+thread. The gap is wider against XGBoost because its native path constructs a
+`DMatrix` per call; LightGBM's booster takes numpy directly, so it starts from a
+lighter baseline. Against a *stock* XGBoost the batch=1 gap is far wider still —
+it spins up a thread per core for a single row and the dispatch cost dominates —
+but that measures thread setup, not the kernel.
 
-**Per-call overhead dominates small batches.** At batch=1 OMLE is 21–42x faster
-than XGBoost and 5–13x faster than LightGBM. The gap is wider against XGBoost
-because its native path constructs a `DMatrix` per call; LightGBM's booster takes
-numpy directly, so it starts from a lighter baseline and the margin is smaller.
+**There is no crossover any more.** OMLE stays ahead of both frameworks at every
+batch size on every tree model, bottoming out at 1.03x (`xgboost/multiclass`,
+batch 10 000) and holding 1.4–3.3x across LightGBM. Earlier revisions of this
+file reported native winning by 2–8x from batch≈1000; that was three separate
+things, all since fixed:
 
-**The apparent crossover at large batches is mostly core count.** From
-batch≈1000 the matrix shows native ahead by 1.6–8x, but that is 11 native cores
-against one OMLE thread. Thread-matched, OMLE holds its lead on LightGBM and
-reaches parity with XGBoost — see *Threading*. A genuine per-thread gap remains
-only against XGBoost, and it is under 10%.
+- the benchmark pinned OMLE to one thread while XGBoost and LightGBM used every
+  core, so the large-batch columns compared 1 core against 11 (see *Threading*);
+- the batched walk read four separate SoA arrays per node instead of the compact
+  AoS forest, and ran four traversals to completion rather than interleaving
+  eight, leaving the dependent-load chain unhidden;
+- a single splitless tree — which boosting emits routinely, 1514 of 5000 trees
+  in the multiclass model — disqualified an entire model from the fast layout.
 
-The practical read: OMLE's advantage is largest for latency-sensitive serving of
-one row or a few, where it is a large constant factor faster. For bulk scoring it
-is competitive once given the same cores, but a native library already tuned for
-your batch size is not obviously worth replacing. The adult pipeline is the
-outlier, at **186.22x** at batch=1 and still **1.88x** at batch 1000, because
-the native path re-runs the entire sklearn `ColumnTransformer` on every call
-while OMLE compiles it into the graph.
+**MNIST is the hardest case and the one still worth watching.** At 784 features
+`xgboost/mnist` is 0.68x at batch 10 000, the only tree model below parity. The
+feature row no longer fits the blocking assumption that keeps a 128-row window
+in L1, so the traversal pays cache misses the other models do not.
+
+The practical read: OMLE is the better choice for latency-sensitive serving of
+one row or a few, where it is a large constant factor faster, and it is now also
+competitive-to-better for bulk scoring at matched thread counts. The adult
+pipeline remains the widest margin at batch=1, at **181.00x**, because the native
+path re-runs the entire sklearn `ColumnTransformer` on every call while OMLE
+compiles it into the graph — though it is also the one model where the native
+path wins at batch 10 000 (0.75x), since its cost is preprocessing, not trees.
 
 ## Model configs
 

@@ -157,9 +157,30 @@ static void build_flat_forest(TreeEnsembleModel<T>& model) {
   ff.valid = false;
   if (model.trees.empty()) return;
 
-  const bool all_le = model.trees[0].all_less_equal;
+  // A tree with no splits leaves BOTH flags at their initial true, because the
+  // loop in graph_loader that clears them only visits internal nodes. Such a
+  // tree is vacuously compatible with either comparison convention, so it must
+  // not take part in the consensus below.
+  //
+  // This matters more than it looks. Gradient boosting emits a bare-leaf tree
+  // whenever a round finds no split worth making, which is routine for the
+  // later rounds of a multiclass model: 1514 of 5000 trees in the benchmark's
+  // multiclass model, and 97 of 500 in the binary one. Counting those as a
+  // convention mismatch rejected the whole flat forest, dropping every such
+  // model onto the slow per-tree SoA walk for both single-row and batch calls.
+  auto no_constraint = [](const FlatTree<T>& tr) {
+    return tr.all_less_than && tr.all_less_equal;
+  };
+
+  bool all_le = false;
+  for (const auto& tr : model.trees) {
+    if (no_constraint(tr)) continue;
+    all_le = tr.all_less_equal;
+    break;
+  }
   for (const auto& tr : model.trees) {
     if (tr.has_complex || tr.leaf_width != 1) return;
+    if (no_constraint(tr)) continue;  // imposes nothing either way
     if (tr.all_less_equal != all_le) return;
     if (!tr.all_less_than && !tr.all_less_equal) return;
   }
@@ -631,6 +652,139 @@ static void traverse_block_simple(const FlatTree<T>& tree,
   for (; i < block_n; ++i)
     scores[i] +=
         lv[traverse_one(features + static_cast<std::size_t>(i) * n_features)];
+}
+
+// -----------------------------------------------------------------------
+// traverse_block_flat — blocked traversal over the compact AoS flat forest.
+//
+// Same block-outer/tree-inner structure as traverse_block_simple, but walking
+// FlatForestData::all_nodes instead of the per-tree SoA arrays. That is the
+// whole point: the SoA walk reads tree.feature[n], tree.threshold[n],
+// tree.left_child[n] and tree.right_child[n] — four arrays, so up to four
+// cache lines per node visited — while one AoSNode is 16 bytes (float) and
+// lands in a single line. Same traversal, a quarter of the cache traffic.
+//
+// The flat forest was built for the n_samples==1 path and build_flat_forest
+// frees the per-tree AoS caches once it exists, so before this the batch path
+// had no AoS layout left to use and fell back to SoA.
+//
+// Leaf convention is the flat forest's: feature == -1 marks a leaf and its
+// value lives in the threshold field, so the leaf read is nodes[n].threshold.
+// -----------------------------------------------------------------------
+template <typename T, bool UseLE>
+[[nodiscard]] inline int traverse_aos_flat(
+    const AoSNode<T>* OMLE_RESTRICT nodes, int n,
+    const T* OMLE_RESTRICT row) noexcept {
+  while (nodes[n].feature >= 0) {
+    const T fval = row[nodes[n].feature];
+    const bool go_left =
+        UseLE ? (fval <= nodes[n].threshold) : (fval < nodes[n].threshold);
+    n = go_left ? nodes[n].left : nodes[n].right;
+  }
+  return n;
+}
+
+template <typename T, bool UseLE>
+static void traverse_block_flat(
+    const typename TreeEnsembleModel<T>::FlatForestData& ff,
+    const T* OMLE_RESTRICT features, int block_n, int n_features,
+    T* OMLE_RESTRICT scores) noexcept {
+  const AoSNode<T>* OMLE_RESTRICT nodes = ff.all_nodes.data();
+  const int32_t* OMLE_RESTRICT roots = ff.roots.data();
+  const int n_trees = static_cast<int>(ff.roots.size());
+
+  for (int t = 0; t < n_trees; ++t) {
+    const int root = roots[t];
+    // 4x unrolled: four independent traversals let the out-of-order engine
+    // keep several dependent loads in flight at once, which is what hides the
+    // load latency on a pointer-chasing walk.
+    // 8 chains, stepped in lockstep rather than run to completion one at a
+    // time: the walk is a dependent-load chain (~4-cycle L1 latency per node),
+    // so the only way to go faster is to have more of them in flight. Running
+    // them lockstep keeps all 8 loads of a level issued back to back.
+    int i = 0;
+    for (; i + 8 <= block_n; i += 8) {
+      int c[8];
+      const T* r[8];
+      for (int k = 0; k < 8; ++k) {
+        c[k] = root;
+        r[k] = features + static_cast<std::size_t>(i + k) * n_features;
+      }
+      bool active = true;
+      while (active) {
+        active = false;
+        for (int k = 0; k < 8; ++k) {
+          const AoSNode<T>& nd = nodes[c[k]];
+          if (nd.feature >= 0) {
+            const T fval = r[k][nd.feature];
+            const bool go_left =
+                UseLE ? (fval <= nd.threshold) : (fval < nd.threshold);
+            c[k] = go_left ? nd.left : nd.right;
+            active = true;
+          }
+        }
+      }
+      for (int k = 0; k < 8; ++k) scores[i + k] += nodes[c[k]].threshold;
+    }
+    for (; i < block_n; ++i) {
+      const T* row = features + static_cast<std::size_t>(i) * n_features;
+      scores[i] +=
+          nodes[traverse_aos_flat<T, UseLE>(nodes, root, row)].threshold;
+    }
+  }
+}
+
+// traverse_block_flat_grouped — as traverse_block_flat, but for grouped
+// multi-output models (XGBoost/LightGBM multiclass, and binary:logistic, which
+// the converter emits as two outputs). Each tree contributes to one output
+// column, given by FlatForestData::tree_class, so the only difference is the
+// scatter: out[i * n_out + class] rather than out[i].
+// -----------------------------------------------------------------------
+template <typename T, bool UseLE>
+static void traverse_block_flat_grouped(
+    const typename TreeEnsembleModel<T>::FlatForestData& ff,
+    const T* OMLE_RESTRICT features, int block_n, int n_features, int n_out,
+    T* OMLE_RESTRICT scores) noexcept {
+  const AoSNode<T>* OMLE_RESTRICT nodes = ff.all_nodes.data();
+  const int32_t* OMLE_RESTRICT roots = ff.roots.data();
+  const int32_t* OMLE_RESTRICT cls = ff.tree_class.data();
+  const int n_trees = static_cast<int>(ff.roots.size());
+
+  for (int t = 0; t < n_trees; ++t) {
+    const int root = roots[t];
+    const int ci = cls[t];
+    int i = 0;
+    for (; i + 8 <= block_n; i += 8) {
+      int c[8];
+      const T* r[8];
+      for (int k = 0; k < 8; ++k) {
+        c[k] = root;
+        r[k] = features + static_cast<std::size_t>(i + k) * n_features;
+      }
+      bool active = true;
+      while (active) {
+        active = false;
+        for (int k = 0; k < 8; ++k) {
+          const AoSNode<T>& nd = nodes[c[k]];
+          if (nd.feature >= 0) {
+            const T fval = r[k][nd.feature];
+            const bool go_left =
+                UseLE ? (fval <= nd.threshold) : (fval < nd.threshold);
+            c[k] = go_left ? nd.left : nd.right;
+            active = true;
+          }
+        }
+      }
+      for (int k = 0; k < 8; ++k)
+        scores[static_cast<std::size_t>(i + k) * n_out + ci] +=
+            nodes[c[k]].threshold;
+    }
+    for (; i < block_n; ++i) {
+      const T* row = features + static_cast<std::size_t>(i) * n_features;
+      scores[static_cast<std::size_t>(i) * n_out + ci] +=
+          nodes[traverse_aos_flat<T, UseLE>(nodes, root, row)].threshold;
+    }
+  }
 }
 
 // -----------------------------------------------------------------------
@@ -1195,11 +1349,22 @@ static void predict_impl(const TreeEnsembleModel<T>& model,
 
     if (all_lt || all_le) {
       const int BLOCK = compute_block_size(n_feat, static_cast<int>(sizeof(T)));
+      // Prefer the AoS flat forest when it exists: same traversal as the SoA
+      // block path but one cache line per node instead of up to four. NaN
+      // inputs still need the SoA path, which carries the default-child logic.
+      const bool use_flat = !has_nan && model.flat_forest.valid;
       for (int b = 0; b < n_samples; b += BLOCK) {
         const int bn = std::min(BLOCK, n_samples - b);
         const T* feat_b = features + static_cast<std::size_t>(b) * n_feat;
         T* out_b = output + b;
-        if (all_le) {
+        if (use_flat) {
+          if (model.flat_forest.all_le)
+            traverse_block_flat<T, true>(model.flat_forest, feat_b, bn, n_feat,
+                                         out_b);
+          else
+            traverse_block_flat<T, false>(model.flat_forest, feat_b, bn, n_feat,
+                                          out_b);
+        } else if (all_le) {
           for (const FlatTree<T>& tr : model.trees)
             traverse_block_simple<T, true>(tr, feat_b, bn, n_feat, out_b);
         } else {
@@ -1215,9 +1380,20 @@ static void predict_impl(const TreeEnsembleModel<T>& model,
     return;
   }
 
-  // Blocked path for grouped multi-output (XGBoost/LightGBM multiclass):
-  // same block-outer strategy to keep feature windows in L1 cache.
-  if (has_groups && model.aggregation == Aggregation::Sum && !has_weights) {
+  // Blocked path for multi-output sums: grouped (XGBoost/LightGBM multiclass,
+  // one tree per class) and ungrouped alike.
+  //
+  // The ungrouped case is XGBoost's binary:logistic, which the converter emits
+  // as two outputs with no tree_group — every tree sums into column 0 and the
+  // post-transform fills column 1. That is the grouped case with every tree in
+  // class 0, and FlatForestData::tree_class is already all-zero when
+  // tree_group is empty, so the same kernel serves both. Gating on has_groups
+  // alone sent every binary classifier to the general per-tree path instead.
+  //
+  // Vector-leaf trees (leaf_width > 1) are excluded by the all_lt/all_le scan
+  // below and still fall through to the general path.
+  if ((has_groups || multi_output) && model.aggregation == Aggregation::Sum &&
+      !has_weights) {
     // Fast path for n_samples==1: flat forest ILP/SIMD-across-trees when
     // the model was built with a valid FlatForest (no NaN, uniform depth,
     // all-lt or all-le, leaf_width==1).  Falls back to per-tree traverse_single
@@ -1267,22 +1443,31 @@ static void predict_impl(const TreeEnsembleModel<T>& model,
         const int bn = std::min(BLOCK, n_samples - b);
         const T* feat_b = features + static_cast<std::size_t>(b) * n_feat;
         T* out_b = output + static_cast<std::size_t>(b) * n_out;
-        for (int t = 0; t < model.n_trees; ++t) {
-          const FlatTree<T>& tr = model.trees[t];
-          const int ci = (t < static_cast<int>(model.tree_group.size()))
-                             ? model.tree_group[t]
-                             : 0;
-          const T* lv = tr.leaf_value.data();
-          if (all_le) {
-            for (int i = 0; i < bn; ++i)
-              out_b[static_cast<std::size_t>(i) * n_out + ci] +=
-                  lv[traverse_one_le_nonan(
-                      tr, feat_b + static_cast<std::size_t>(i) * n_feat)];
-          } else {
-            for (int i = 0; i < bn; ++i)
-              out_b[static_cast<std::size_t>(i) * n_out + ci] +=
-                  lv[traverse_one_lt_nonan(
-                      tr, feat_b + static_cast<std::size_t>(i) * n_feat)];
+        if (!has_nan && model.flat_forest.valid) {
+          if (model.flat_forest.all_le)
+            traverse_block_flat_grouped<T, true>(model.flat_forest, feat_b, bn,
+                                                 n_feat, n_out, out_b);
+          else
+            traverse_block_flat_grouped<T, false>(model.flat_forest, feat_b, bn,
+                                                  n_feat, n_out, out_b);
+        } else {
+          for (int t = 0; t < model.n_trees; ++t) {
+            const FlatTree<T>& tr = model.trees[t];
+            const int ci = (t < static_cast<int>(model.tree_group.size()))
+                               ? model.tree_group[t]
+                               : 0;
+            const T* lv = tr.leaf_value.data();
+            if (all_le) {
+              for (int i = 0; i < bn; ++i)
+                out_b[static_cast<std::size_t>(i) * n_out + ci] +=
+                    lv[traverse_one_le_nonan(
+                        tr, feat_b + static_cast<std::size_t>(i) * n_feat)];
+            } else {
+              for (int i = 0; i < bn; ++i)
+                out_b[static_cast<std::size_t>(i) * n_out + ci] +=
+                    lv[traverse_one_lt_nonan(
+                        tr, feat_b + static_cast<std::size_t>(i) * n_feat)];
+            }
           }
         }
       }

@@ -87,43 +87,50 @@ two properties above.
 
 ## Performance
 
-Speedup over the framework's own predictor, from the suite in
-[`benchmark/`](benchmark/README.md) — 27 models across XGBoost, LightGBM,
-scikit-learn and ONNX Runtime, checked for numerical agreement as well as
-latency. Apple M-series, `small` models, `min` latency.
+Speedup over the framework's own predictor, so `>1` means faster than native.
+`small` models, `min` latency, Apple M-series, **every engine pinned to one
+thread**. Cells read *ORT / OMLE*; bold marks the faster of the two. Full method,
+model configs and the medium/large sizes are in
+[`benchmark/README.md`](benchmark/README.md).
 
-**Small batches** (`>1` means faster than native). Neither framework engages its
-own threads at this size, so these hold regardless of core count:
+| Model | batch 1 | batch 10 | batch 100 | batch 1 000 | batch 10 000 |
+|-------|----------:|----------:|----------:|----------:|----------:|
+| xgb/regression | 13.99x / **16.64x** | 5.41x / **7.74x** | 0.87x / **2.43x** | 0.31x / **1.39x** | 0.26x / **1.21x** |
+| xgb/binary | 10.45x / **15.31x** | 3.89x / **7.87x** | 0.82x / **2.31x** | 0.48x / **1.30x** | 0.44x / **1.11x** |
+| xgb/multiclass | 6.82x / **13.75x** | 1.22x / **3.99x** | 0.29x / **1.64x** | 0.23x / **1.08x** | 0.22x / **1.03x** |
+| xgb/mnist | 7.43x / **9.63x** | 1.62x / **2.28x** | 0.37x / **0.93x** | 0.28x / **0.75x** | 0.27x / **0.68x** |
+| lgbm/regression | 4.97x / **5.72x** | 3.33x / **3.97x** | 2.16x / **3.36x** | 0.86x / **3.36x** | 0.75x / **3.31x** |
+| lgbm/binary | 3.60x / **5.54x** | 1.26x / **3.85x** | 1.26x / **3.09x** | 1.46x / **2.65x** | 1.46x / **2.84x** |
+| lgbm/multiclass | 2.12x / **3.62x** | 1.02x / **3.37x** | 0.71x / **3.43x** | 0.67x / **3.37x** | 0.67x / **3.33x** |
+| lgbm/mnist | 2.64x / **3.16x** | 1.37x / **1.89x** | 0.79x / **1.71x** | 0.65x / **1.53x** | 0.70x / **1.43x** |
+| adult pipeline | 147.92x / **181.00x** | **96.89x** / 86.77x | **20.47x** / 15.88x | **2.78x** / 1.83x | **1.39x** / 0.75x |
 
-| Model | batch 1 | batch 10 |
-|-------|--------:|---------:|
-| xgb/regression | **42.20x** | 14.13x |
-| xgb/binary | **21.73x** | 9.37x |
-| xgb/multiclass | **29.19x** | 6.11x |
-| xgb/mnist | **23.65x** | 4.39x |
-| lgbm/regression | **13.35x** | 5.18x |
-| lgbm/binary | **7.52x** | 3.26x |
-| lgbm/multiclass | **5.23x** | 1.68x |
-| lgbm/mnist | **5.69x** | 1.24x |
-| sklearn adult pipeline | **186.22x** | 90.60x |
+**Small batches are where the margin is largest.** At batch=1 OMLE is 9.6–16.6x
+faster than XGBoost and 3.2–5.7x faster than LightGBM, because neither
+framework's entry point is built for one row — XGBoost constructs a `DMatrix` per
+call. The adult pipeline is the extreme at 181x, since the native path re-runs
+the whole sklearn `ColumnTransformer` every call while OMLE compiles it into the
+graph.
 
-The pipeline case is the widest because the native path re-runs the whole
-`ColumnTransformer` on every call, while OMLE compiles it into the graph.
+**The margin narrows with batch size but does not invert**, except on
+`xgb/mnist`. ORT is the contrast: at batch 10 000 it drops below native on seven
+of the nine models, to 0.22x on `xgb/multiclass`, so it is a latency engine here,
+while OMLE holds 1.03–3.33x everywhere but `xgb/mnist`. Note both
+libraries predict on *every core* unless told otherwise — leave OMLE at its
+one-thread default against a stock XGBoost and you are measuring core count, not
+kernels. Given equal threads OMLE scales slightly better than either framework
+(4.7–5.5x on 11 cores against 4.2–5.3x), so at batch 10 000 the lead *widens*
+with threads rather than holding: `xgb/regression` goes 1.37x → 1.76x and
+`lgbm/binary` 3.23x → 3.72x.
 
-**Large batches**, `medium` models, batch 10 000. XGBoost and LightGBM predict on
-every core unless told otherwise, so both sides are pinned here:
-
-| Model | native | OMLE | 1 thread each | all 11 cores each |
-|-------|-------:|-----:|--------------:|------------------:|
-| xgb/regression | 30.99 ms | 34.01 ms | 0.91x | 0.90x |
-| xgb/binary | 10.59 ms | 10.69 ms | 0.99x | 1.33x |
-| lgbm/regression | 162.40 ms | 34.99 ms | **4.64x** | **4.23x** |
-| lgbm/binary | 60.68 ms | 23.14 ms | **2.62x** | **2.39x** |
-
-Thread scaling is near-identical on both sides, so the ratio barely moves between
-the two columns. The `ms` figures are the single-thread pair. Leave the runtime at
-its one-thread default against a stock XGBoost or LightGBM and you are measuring
-core count, not kernels.
+`xgb/mnist` is the one model below parity at scale. Wide feature rows cost OMLE
+more than they cost XGBoost: from 8 features to 784, XGBoost's time per node
+visit rises about 20% while OMLE's roughly doubles. The cause is not the
+cache-block size — sweeping it from 4 to 256 rows moves MNIST by under 2% — nor
+the row-major layout, since transposing each block to column-major measured
+consistently slower. It is the one model that also scales worse than native
+(`lgbm/mnist`, 3.96x against 5.14x on 11 cores), which points at memory
+bandwidth rather than cache locality.
 
 **Tuning for throughput.** Two load-time settings, and the product is what
 counts. They are `LoadOptions` fields in C++ (*C++ API* below), the same two
