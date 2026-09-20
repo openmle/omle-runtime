@@ -1,8 +1,58 @@
 # OMLE Runtime
 
-High-performance C++ inference engine for classical machine learning models serialized in OMLE format. Supports batch prediction with multi-threaded execution, bindings for Python/NumPy, Java, Scala/Spark and PySpark, and a stable C ABI for FFI integration.
+[![PyPI](https://img.shields.io/pypi/v/omle-runtime.svg)](https://pypi.org/project/omle-runtime/)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-runtime.svg?label=maven-central%20%28java%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-runtime)
+[![Tests](https://github.com/openmle/omle-runtime/actions/workflows/test.yml/badge.svg)](https://github.com/openmle/omle-runtime/actions/workflows/test.yml)
+
+High-performance C++ inference engine for classical machine learning models serialized in OMLE format. Supports batch prediction with multi-threaded execution, bindings for Python/NumPy and Java, and a stable C ABI for FFI integration. The Scala/Spark and PySpark bindings build on it from [omle-spark](https://github.com/openmle/omle-spark).
 
 The runtime implements the OMLE standard in full: every model type, and every operator in the `omle.core`, `omle.feature`, `omle.ml` and `omle.text` domains.
+
+## Installation
+
+### Python
+
+```bash
+pip install omle-runtime
+```
+
+Wheels are self-contained: protobuf and Abseil are linked in statically, so
+there is nothing to install alongside. Published for CPython 3.10-3.14 on
+linux-x86_64, linux-aarch64, macos-arm64 and windows-x86_64. An Intel Mac
+builds from source, which needs the native toolchain below.
+
+### Java
+
+```xml
+<dependency>
+  <groupId>io.github.openmle</groupId>
+  <artifactId>omle-runtime</artifactId>
+  <version>0.1.0</version>
+</dependency>
+```
+
+The published jar carries the native library for every supported platform at
+JNA's own resource paths, so JNA extracts the right one at load time — no
+native toolchain, and no `-Djna.library.path`. A jar built locally with
+`mvn package` has no bundled library and does need pointing at one.
+
+### Spark and PySpark
+
+Provided by [omle-spark](https://github.com/openmle/omle-spark), a separate
+project that depends on this one:
+
+```scala
+libraryDependencies += "io.github.openmle" %% "omle-spark" % "0.1.0"
+```
+
+```bash
+pip install omle-spark
+```
+
+See that project's README for the Scala and PySpark APIs, the Maven spelling,
+and how the jars reach a Spark class-path.
+
+---
 
 ## Building
 
@@ -35,8 +85,9 @@ The build produces a shared library and two CLI tools, `omle-predict` and
 
 There is one library, and it exports both surfaces: the C++ API
 (`omle::rt::Model`, `omle::rt::Tensor`) and the flat C ABI from `omle/c_api.h`.
-C++ callers such as omle-server link it directly; the Java, Scala and PySpark
-bindings load the same file through JNA and use only the C entry points.
+C++ callers such as omle-server link it directly; the Java bindings load the
+same file through JNA and use only the C entry points, and omle-spark reaches it
+through those.
 
 Because the C++ surface crosses the shared-library boundary, a C++ consumer
 should be built with the same compiler and standard library as the runtime.
@@ -50,9 +101,9 @@ cmake --build build
 pip install -e python/
 ```
 
-### JVM bindings (Java and Spark)
+### JVM bindings (Java)
 
-The Java, Scala and PySpark bindings all call the C ABI through JNA, so they need
+The Java bindings call the C ABI through JNA, so they need
 the shared library `libomleruntime`, which the default build already produces —
 no extra option and no Python toolchain required:
 
@@ -63,10 +114,6 @@ cmake --build build
 
 # 2. Java bindings  →  java/target/omle-runtime-<version>.jar
 cd java && mvn package && cd ..
-
-# 3. Spark transformer  →  spark/target/scala-2.13/omle-spark_2.13-<version>.jar
-#    (reads the jar produced in step 2, so run it after)
-cd spark && sbt package && cd ..
 ```
 
 Point JNA at the directory holding `libomleruntime` with either `-Djna.library.path=<dir>`
@@ -370,94 +417,6 @@ For schema-driven input, `predictColumns(String[] names, int[] types, Object[] c
 feeds named columns directly, which suits models converted from a pipeline whose
 inputs are scalar columns rather than one assembled vector.
 
-## Spark (Scala / JVM)
-
-`io.github.openmle:omle-spark`, built with `sbt package` in `spark/`, versioned
-from the git tag by sbt-dynver. `OMLEModel` is a
-plain Spark ML `Transformer`, so it drops into a `Pipeline` like any other stage.
-Both the `omle-spark` JAR and the `omle-runtime` JAR must be on the driver and
-executor class-paths. With a released `omle-runtime` jar that is the whole setup:
-the native library travels inside it, so every executor JVM extracts its own copy
-and nothing has to be staged on the nodes.
-
-Only when the `omle-runtime` jar was built locally — and so carries no bundled
-library — does JNA need pointing at one that exists on **every node**:
-
-```
---conf spark.driver.extraJavaOptions=-Djna.library.path=/opt/omle/lib
---conf spark.executor.extraJavaOptions=-Djna.library.path=/opt/omle/lib
-```
-
-```scala
-import io.github.openmle.spark.OMLEModel
-import org.apache.spark.ml.feature.VectorAssembler
-
-val df = Seq((0.1f, 0.9f), (0.7f, 0.2f)).toDF("f0", "f1")
-
-val features = new VectorAssembler()
-  .setInputCols(Array("f0", "f1"))
-  .setOutputCol("features")
-  .transform(df)
-
-// loadFile opens the model once on the driver, so a bad path fails here
-// rather than inside transform on every executor.
-val model = OMLEModel.loadFile("/path/to/model.omle")
-  .setFeaturesCol("features")
-  .setPredictionCol("prediction")
-  .setProbabilityCol("probability")
-
-model.transform(features).select("prediction", "probability").show()
-```
-
-`prediction` is always added, as a `Double`. `probability` is a `Vector` and is only
-added when the model produces more than one output column per row — so a regression
-model yields `prediction` alone, and selecting `probability` on one would fail.
-
-Scoring runs inside the executors, one native session per partition.
-
-## PySpark
-
-`pip install omle-spark`. A thin wrapper that delegates `transform` to the same
-JVM `io.github.openmle.spark.OMLEModel`, so it needs the same two JARs on the
-class-path — and, like the Scala API, no `jna.library.path` when the
-`omle-runtime` jar is a released one.
-
-Input columns are resolved from the model's declared input specs. A model with a
-single rank-2 input (`[-1, n_features]`) reads from `featuresCol`, the usual Spark
-ML convention for a pre-assembled vector:
-
-```python
-from omle_spark import OMLEModel
-from pyspark.ml.feature import VectorAssembler
-
-assembler = VectorAssembler(inputCols=["f0", "f1"], outputCol="features")
-
-# loadFile opens the model once on the driver, so a bad path fails here
-# rather than inside transform on every executor.
-model = OMLEModel.loadFile("/path/to/model.omle")
-predictions = model.transform(assembler.transform(df))
-predictions.select("prediction", "probability").show()
-```
-
-As on the JVM side, `probability` is only present for models with more than one
-output column per row; a regression model produces just `prediction`.
-
-A model with multiple or scalar inputs reads each input by its spec name straight
-from the DataFrame, so no `VectorAssembler` is needed:
-
-```python
-# Converted from Pipeline([VectorAssembler(["a", "b"]), RandomForestClassifier()]);
-# the model's input specs are the scalar columns "a" and "b".
-model = OMLEModel.loadFile("/path/to/pipeline.omle")
-predictions = model.transform(raw_df)      # raw_df has columns "a" and "b"
-```
-
-The API mirrors the Scala side: the `OMLEModel.loadFile` factory, and the
-setters `setModelPath`, `setFeaturesCol`, `setPredictionCol` and
-`setProbabilityCol`, each returning `self` for chaining. `OMLEModel(modelPath=...)`
-still works and defers loading, which is what you want if the file only becomes
-readable on the executors.
-
 ## CLI tools
 
 Both tools are statically linked, so they run from anywhere with nothing beside
@@ -515,11 +474,10 @@ cd build && ctest --output-on-failure
 ```
 
 The binding suites are separate, and both need `libomleruntime` built first (see
-[JVM bindings](#jvm-bindings-java-and-spark)):
+[JVM bindings](#jvm-bindings-java)):
 
 ```bash
 cd java  && mvn test     # JUnit 5: loading, schema, tensors, sessions
-cd spark && sbt test     # ScalaTest: Transformer against a local SparkSession
 ```
 
 ## Architecture notes

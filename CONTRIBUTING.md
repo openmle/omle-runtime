@@ -75,7 +75,6 @@ src/                engine internals
   expression_eval.* the elementwise expression DSL
 python/             pybind11 module + the omle_runtime package
 java/               JNI bindings (Maven)
-spark/              Spark integration (Scala)
 tests/              GoogleTest suites, one per area
 ```
 

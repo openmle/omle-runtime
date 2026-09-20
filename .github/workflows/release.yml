@@ -36,7 +36,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # ---------------------------------------------------------------------------
   # 1. The fat jar itself, built by the shared workflow so that this path and
-  #    the omle-spark wheel ship the same binary for a given version.
+  #    consumers get the same binary that this workflow verified.
   # ---------------------------------------------------------------------------
   build-jar:
     uses: ./.github/workflows/build-jar.yml
@@ -63,10 +63,37 @@ jobs:
           java-version: "17"
           cache: maven
 
+      # The staged native libraries, NOT the assembled jar. `mvn deploy` runs
+      # the full lifecycle, so its package phase rebuilds
+      # target/omle-runtime-<version>.jar from src/main/java and overwrites
+      # anything already there — a downloaded fat jar would be destroyed before
+      # it could be published, which is how 0.1.0-rc8 reached Central as a
+      # 21 KB classes-only jar.
+      #
+      # Unpacked into src/main/resources instead, Maven packages them itself and
+      # the jar it deploys IS the fat jar.
       - uses: actions/download-artifact@v4
         with:
-          name: omle-runtime-jar
-          path: omle-runtime/java/target
+          name: omle-runtime-natives
+          path: omle-runtime/java/src/main/resources
+
+      - name: Verify the natives are staged before packaging
+        working-directory: omle-runtime/java
+        shell: bash
+        # Checked here as well as in build-jar.yml: this is the last point
+        # before an artifact becomes permanent on Central, and a release that
+        # silently drops a platform cannot be withdrawn.
+        run: |
+          MISSING=""
+          for prefix in linux-x86-64 linux-aarch64 darwin-aarch64 win32-x86-64; do
+            ls "src/main/resources/$prefix"/* >/dev/null 2>&1 || MISSING="$MISSING $prefix"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::no native library staged for:$MISSING — refusing to"
+            echo "publish a jar that would fail with UnsatisfiedLinkError there."
+            exit 1
+          fi
+          find src/main/resources -type f | sed 's/^/  /'
 
       # -----------------------------------------------------------------------
       # Publish to Maven Central. Only on a tag: a manual run builds and
@@ -108,44 +135,18 @@ jobs:
           mvn -B deploy -Prelease -DskipTests \
             -Drevision="${{ needs.build-jar.outputs.version }}"
 
-  # ---------------------------------------------------------------------------
-  # 3. Publish the omle-spark Scala artifact to Maven Central. The PyPI wheel
-  #    is a separate path (publish-spark.yml), which bundles these jars.
-  # ---------------------------------------------------------------------------
-  publish-spark:
-    name: Deploy omle-spark to Maven Central
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4.2.2
-        with:
-          path: omle-runtime
-          # sbt-dynver reads the tag from git history; a shallow clone would
-          # publish 0.0.0+<sha> instead of the release version.
-          fetch-depth: 0
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: sbt
-      - uses: sbt/setup-sbt@v1
-
-      - name: Build the Java jar it depends on
+      - name: Confirm what was published carries the natives
+        working-directory: omle-runtime/java
         shell: bash
-        # spark/build.sbt picks up java/target/omle-runtime-*.jar as an
-        # unmanaged jar, so Maven has to package before sbt compiles.
-        run: mvn -B -f java/pom.xml package -DskipTests -Drevision="${GITHUB_REF_NAME#v}"
-
-      - name: Publish
-        working-directory: omle-runtime/spark
-        # `ci-release` cross-publishes signed artifacts for both Scala versions
-        # and, on a tagged commit, releases them. sbt-ci-release reads all four
-        # secrets from the environment under exactly these names.
-        env:
-          PGP_SECRET: ${{ secrets.PGP_SECRET }}
-          PGP_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          SONATYPE_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          SONATYPE_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
-        run: sbt ci-release
+        # The jar Maven just deployed is still in target/. Reading it back is
+        # the only check that the resources actually made it in, rather than
+        # being staged and then missed by the build.
+        run: |
+          JAR=$(ls target/omle-runtime-*.jar | grep -vE '\-(sources|javadoc)\.jar$' | head -1)
+          echo "$JAR  ($(du -h "$JAR" | cut -f1))"
+          N=$(unzip -l "$JAR" | grep -cE 'linux-x86-64|linux-aarch64|darwin-aarch64|win32-x86-64')
+          unzip -l "$JAR" | grep -E '\.so|\.dylib|\.dll' | sed 's/^/  /'
+          if [ "$N" -eq 0 ]; then
+            echo "::error::the deployed jar contains no native libraries"
+            exit 1
+          fi

@@ -128,11 +128,17 @@ if(OMLE_BUNDLE_DEPS)
   set(Protobuf_PROTOC_EXECUTABLE "$<TARGET_FILE:protoc>")
   set(Protobuf_INCLUDE_DIRS      "${protobuf_SOURCE_DIR}/src")
   set(Protobuf_VERSION           "${OMLE_PROTOBUF_VERSION} (vendored, static)")
+elseif(TARGET protobuf::libprotobuf)
+  # A parent project already built protobuf and handed us the targets — this is
+  # what omle-server's bundled build does, where gRPC's superbuild supplies
+  # protobuf and Abseil. Calling find_package here would locate a *second*,
+  # system protobuf and put two incompatible copies into one link.
+  # Protobuf_PROTOC_EXECUTABLE and Protobuf_INCLUDE_DIRS come from that parent.
+  message(STATUS "Protobuf           : provided by the enclosing project")
 else()
   list(APPEND CMAKE_PREFIX_PATH "/opt/anaconda3" "/usr/local" "/opt/homebrew")
   find_package(Protobuf REQUIRED)
 endif()
-find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
 message(STATUS "Protobuf version   : ${Protobuf_VERSION}")
 message(STATUS "Protobuf include   : ${Protobuf_INCLUDE_DIRS}")
 message(STATUS "Protobuf protoc    : ${Protobuf_PROTOC_EXECUTABLE}")
@@ -246,7 +252,11 @@ target_link_libraries(${_omle_tgt} PUBLIC protobuf::libprotobuf Threads::Threads
 # locate the *system* shared Abseil and link that alongside it — putting back
 # the shared dependency the bundled build exists to remove, and risking two
 # copies of Abseil in one library.
-if(NOT OMLE_BUNDLE_DEPS)
+# `NOT TARGET absl::base` covers the case where an enclosing project already
+# supplies Abseil — omle-server's bundled build gets it from gRPC's superbuild.
+# Probing for it there finds the *system* Abseil, whose config file then fails
+# outright because the targets it wants to define already exist.
+if(NOT OMLE_BUNDLE_DEPS AND NOT TARGET absl::base)
   # Each target is probed before use. Naming them unconditionally is what broke
   # CI: Ubuntu's libabsl-dev sets absl_FOUND but does not export the internal
   # targets such as absl::log_internal_message, and linking a non-existent
@@ -347,6 +357,11 @@ endif()
 # nothing extra. This option only adds the pybind11 fast-path extension.
 option(BUILD_PYTHON "Build the Python extension module" OFF)
 if(BUILD_PYTHON)
+  # Moved here from the top of the file, where it ran unconditionally. Nothing
+  # outside python/ reads Python3_*, so a pure C++ consumer — omle-server links
+  # this as a subproject with BUILD_PYTHON=OFF — was still made to supply the
+  # CPython development headers, failing on any image without python3-dev.
+  find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
   add_subdirectory(python)
 endif()
 

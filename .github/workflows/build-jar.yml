@@ -4,10 +4,9 @@ name: Build the fat jar
 # runtime for every supported platform, so a consumer adds a single dependency
 # and needs neither a native toolchain nor -Djna.library.path.
 #
-# Callable, because two publish paths need the same artifact: release.yml
-# deploys it to Maven Central, and publish-spark.yml bundles it inside the
-# omle-spark wheel. Building it twice would risk the two shipping different
-# binaries for the same version.
+# Callable so that release.yml can deploy the same artifact it verifies,
+# without the jar being built twice from the same tag. omle-spark consumes the
+# published result from Maven Central rather than building it.
 #
 # Two stages, because no single runner can produce all the libraries:
 #
@@ -240,4 +239,17 @@ jobs:
         with:
           name: omle-runtime-jar
           path: omle-runtime/java/target/omle-runtime-*.jar
+          if-no-files-found: error
+
+      # The staged natives, separately from the assembled jar.
+      #
+      # A consumer that needs to run `mvn package` or `mvn deploy` itself cannot
+      # use the jar above: those phases rebuild target/omle-runtime-*.jar from
+      # source and overwrite whatever is sitting there, so a downloaded fat jar
+      # is destroyed before it can be published. Handing that job these
+      # resources instead lets Maven build the fat jar itself.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omle-runtime-natives
+          path: omle-runtime/java/src/main/resources/
           if-no-files-found: error

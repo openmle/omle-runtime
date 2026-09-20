@@ -19,9 +19,9 @@ name: Publish omle-runtime
 #     A shallow clone yields a 0.1.dev1+g<sha> version, which is not what should
 #     be uploaded to an index.
 #
-# omle-spark is published by publish-spark.yml. They are separate files so that
-# each PyPI project's Trusted Publisher can name one workflow and grant upload
-# rights to that project alone.
+# This file publishes omle-runtime alone. The PySpark wrapper moved to the
+# openmle/omle-spark repository and publishes itself from there, so a PyPI
+# Trusted Publisher for omle-runtime need only name this workflow.
 
 on:
   workflow_dispatch:
