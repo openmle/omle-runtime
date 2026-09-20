@@ -256,14 +256,31 @@ target_link_libraries(${_omle_tgt} PUBLIC protobuf::libprotobuf Threads::Threads
 # supplies Abseil — omle-server's bundled build gets it from gRPC's superbuild.
 # Probing for it there finds the *system* Abseil, whose config file then fails
 # outright because the targets it wants to define already exist.
-if(NOT OMLE_BUNDLE_DEPS AND NOT TARGET absl::base)
-  # Each target is probed before use. Naming them unconditionally is what broke
-  # CI: Ubuntu's libabsl-dev sets absl_FOUND but does not export the internal
-  # targets such as absl::log_internal_message, and linking a non-existent
-  # target fails the configure step outright. Where a distribution ships absl as
-  # a shared library, the omitted pieces resolve at load time anyway.
-  find_package(absl QUIET)
-  if(absl_FOUND)
+if(NOT OMLE_BUNDLE_DEPS)
+  # Probing and linking are separate decisions. Only probe when nothing has
+  # defined the targets yet — inside omle-server's bundled build gRPC's
+  # superbuild has already supplied Abseil, and probing there finds the
+  # *system* copy, whose config file fails outright because the targets it
+  # wants to define already exist.
+  #
+  # But link regardless of which of those produced the targets. Guarding the
+  # link on the same condition is a subtle break: protobuf's own config calls
+  # find_dependency(absl), so absl::base can already exist here, the whole
+  # block gets skipped, and nothing links Abseil at all. The shared library
+  # still builds — it resolves those symbols through libprotobuf — while
+  # anything linking the static archive fails with undefined
+  # absl::hash_internal symbols from omle.pb.cc.
+  if(NOT TARGET absl::base)
+    find_package(absl QUIET)
+  endif()
+
+  if(absl_FOUND OR TARGET absl::base)
+    # Each target is probed before use. Naming them unconditionally is what
+    # broke CI once: Ubuntu's libabsl-dev sets absl_FOUND but does not export
+    # the internal targets such as absl::log_internal_message, and linking a
+    # non-existent target fails the configure step outright. Where a
+    # distribution ships absl as a shared library, the omitted pieces resolve
+    # at load time anyway.
     foreach(_absl_target
         absl::base absl::hash absl::strings absl::status absl::log
         absl::log_internal_message absl::log_internal_check_op)
