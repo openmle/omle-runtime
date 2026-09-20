@@ -3,10 +3,20 @@
 Mirrors the Spark ML Python API pattern: a thin Python class that delegates
 ``transform`` to the JVM-side ``io.github.openmle.spark.OMLEModel`` Scala class.
 
-The ``omle-spark`` JAR (built with ``sbt package``) must be on the Spark
-driver/executor class-path, and the native ``libomleruntime`` shared library
-must be visible to JNA on every node (set ``-Djna.library.path=...`` in
-``spark.driver.extraJavaOptions`` / ``spark.executor.extraJavaOptions``).
+The JARs this needs ship inside the package, so nothing has to be built and no
+native library has to be installed. They must be on the class-path before the
+JVM starts, which means naming them when the session is built::
+
+    import omle_spark
+    spark = (SparkSession.builder
+             .config("spark.jars", omle_spark.jars_classpath())
+             .getOrCreate())
+
+``spark.jars`` also ships them to the executors, and JNA extracts the right
+``libomleruntime`` for each node's platform out of the omle-runtime JAR, so
+``-Djna.library.path`` is not needed. Setting this after ``getOrCreate()`` has
+no effect and ``transform`` then fails with ``'JavaPackage' object is not
+callable``.
 
 Input columns are resolved from the model's declared input specs:
 

@@ -77,3 +77,7 @@
 
 **/catboost_info
 /spark/python/omle_spark/_version.py
+
+# Staged by spark/scripts/stage_jars.py before the wheel build; build output.
+/spark/python/omle_spark/jars/
+/spark/python/dist

@@ -1,0 +1,243 @@
+name: Build the fat jar
+
+# Builds the redistributable omle-runtime jar: one jar carrying the native
+# runtime for every supported platform, so a consumer adds a single dependency
+# and needs neither a native toolchain nor -Djna.library.path.
+#
+# Callable, because two publish paths need the same artifact: release.yml
+# deploys it to Maven Central, and publish-spark.yml bundles it inside the
+# omle-spark wheel. Building it twice would risk the two shipping different
+# binaries for the same version.
+#
+# Two stages, because no single runner can produce all the libraries:
+#
+#   native (4 runners, one per platform)
+#     └── each builds libomleruntime with OMLE_BUNDLE_DEPS=ON and uploads it
+#           └── jar (one runner)
+#                 downloads all of them, lays them out where JNA looks, packages
+#
+# OMLE_BUNDLE_DEPS is what makes this worth shipping. Without it the library
+# records absolute paths to protobuf and ~57 Abseil shared objects, so it would
+# only load on a machine that happens to have those packages in those places.
+#
+# The layout is JNA's own: Native.load() falls back to searching the classpath
+# for <Platform.RESOURCE_PREFIX>/<libname> and extracts what it finds, so no
+# loader code is needed on our side and LibHolder is untouched.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version for -Drevision; defaults to the tag, else a snapshot"
+        type: string
+        required: false
+    outputs:
+      version:
+        description: "The version the jar was built with"
+        value: ${{ jobs.jar.outputs.version }}
+
+defaults:
+  run:
+    working-directory: omle-runtime
+
+jobs:
+  native:
+    name: Native (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86-64
+            lib: libomleruntime.so
+          # GitHub's free arm64 Linux runners are available to public
+          # repositories; drop this entry if the repo is private and no larger
+          # runner is configured.
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+            lib: libomleruntime.so
+          # Apple silicon only, matching the wheel matrix in
+          # publish-runtime.yml. An Intel Mac has to build from source.
+          - os: macos-latest
+            target: darwin-aarch64
+            lib: libomleruntime.dylib
+          - os: windows-latest
+            target: win32-x86-64
+            lib: omleruntime.dll
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      # CMake reads the schema from the sibling repository to generate
+      # omle.pb.cc, so it is needed even though nothing here touches Python.
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      # CMakeLists requires Python3 Development.Module even for a pure C++
+      # build.
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build the self-contained runtime
+        shell: bash
+        # No protobuf is installed on the runner on purpose: the vendored build
+        # must not be able to fall back to a system copy. Building protobuf,
+        # protoc and Abseil from source is what makes this job slow.
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \
+            -DOMLE_BUNDLE_DEPS=ON
+          cmake --build build --config Release --target omle_runtime -j 4
+
+      - name: Assert it links nothing external
+        shell: bash
+        # Shipping a library that still needs protobuf would produce a jar that
+        # works on the build machine and fails everywhere else, so this is
+        # checked before the artifact is ever uploaded.
+        run: |
+          LIB="python/omle_runtime/${{ matrix.lib }}"
+          test -f "$LIB" || { echo "::error::$LIB was not built"; exit 1; }
+          case "$RUNNER_OS" in
+            Linux)  LEAKED=$(ldd "$LIB" | grep -ciE 'protobuf|absl' || true) ;;
+            macOS)  LEAKED=$(otool -L "$LIB" | grep -ciE 'protobuf|absl' || true) ;;
+            *)      LEAKED=0 ;;   # no ldd/otool without a developer shell
+          esac
+          if [ "$LEAKED" -ne 0 ]; then
+            echo "::error::$LIB links $LEAKED protobuf/abseil libraries — the"
+            echo "vendored build fell back to a system copy; the jar would not"
+            echo "load on a clean machine."
+            exit 1
+          fi
+          echo "$LIB is self-contained"
+
+      - name: Load it with nothing added to the search path
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        # Run from outside the build tree with no directories added to PATH,
+        # which is the situation on a user's machine. This is the primary check
+        # on Windows, and it is a strong one there: since 3.8 CPython resolves a
+        # DLL's dependencies without consulting PATH, so anything still needing
+        # libprotobuf.dll cannot load here.
+        run: |
+          python -c "
+          import ctypes, os
+          lib = os.path.join(r'${{ github.workspace }}', 'omle-runtime',
+                             'python', 'omle_runtime', '${{ matrix.lib }}')
+          ctypes.CDLL(lib)
+          print('loaded standalone:', lib)
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.target }}
+          path: omle-runtime/python/omle_runtime/${{ matrix.lib }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 2. Assemble the jar.
+  # ---------------------------------------------------------------------------
+  jar:
+    name: Assemble fat jar
+    needs: native
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+          # Full history: the version is derived from the git tag below, and a
+          # shallow clone cannot see tags.
+          fetch-depth: 0
+      # No omle checkout and no CMake here: this job only compiles Java and
+      # packages the libraries the previous stage produced.
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-artifacts
+
+      - name: Lay the libraries out where JNA looks for them
+        shell: bash
+        # src/main/resources is Maven's default resource directory, so whatever
+        # is placed here lands at the root of the jar with no pom change. The
+        # directory name has to be exactly Platform.RESOURCE_PREFIX -- JNA looks
+        # up "<prefix>/<libname>" and nothing else.
+        run: |
+          RES=java/src/main/resources
+          mkdir -p "$RES"
+          for dir in "$GITHUB_WORKSPACE"/native-artifacts/native-*; do
+            prefix="$(basename "$dir" | sed 's/^native-//')"
+            mkdir -p "$RES/$prefix"
+            cp "$dir"/* "$RES/$prefix/"
+            echo "staged $prefix: $(ls "$RES/$prefix")"
+          done
+
+          # A jar silently missing a platform is the failure mode worth
+          # guarding: it builds, publishes, and only breaks for the subset of
+          # users on that platform.
+          MISSING=""
+          for prefix in linux-x86-64 linux-aarch64 darwin-aarch64 win32-x86-64; do
+            ls "$RES/$prefix"/* >/dev/null 2>&1 || MISSING="$MISSING $prefix"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::no native library staged for:$MISSING"
+            exit 1
+          fi
+
+      - name: Resolve the version from the tag
+        id: ver
+        shell: bash
+        # java/pom.xml takes its version from the ${revision} property, so the
+        # tag has to be turned into a number here. A manual run has no tag, so
+        # it produces a snapshot that cannot be mistaken for a release.
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            LAST=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+            V="${LAST:-0.0.0}-SNAPSHOT"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "building omle-runtime $V"
+
+      - name: Package, with the tests loading from the jar
+        working-directory: omle-runtime/java
+        shell: bash
+        # omle.lib.dir feeds surefire's jna.library.path, so pointing it at a
+        # directory that does not exist removes the file-path route entirely.
+        # The 42 tests then can only pass by loading the native library out of
+        # the packaged resources -- which is exactly what a consumer of this jar
+        # does, so a green run here is the real acceptance test.
+        run: |
+          mvn -B package \
+            -Drevision="${{ steps.ver.outputs.version }}" \
+            -Domle.lib.dir="${{ runner.temp }}/deliberately-absent"
+
+      - name: Show what shipped
+        shell: bash
+        run: |
+          JAR=$(ls java/target/omle-runtime-*.jar | grep -vE '\-(sources|javadoc)\.jar$' | head -1)
+          echo "$JAR"
+          unzip -l "$JAR" | grep -E '\.so|\.dylib|\.dll'
+          du -h "$JAR" | cut -f1 | sed 's/^/total size: /'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omle-runtime-jar
+          path: omle-runtime/java/target/omle-runtime-*.jar
+          if-no-files-found: error

@@ -39,6 +39,12 @@ Issues = "https://github.com/openmle/omle-runtime/issues"
 where = ["."]
 include = ["omle_spark*"]
 
+# The JARs are staged into omle_spark/jars/ by spark/scripts/stage_jars.py
+# before the wheel is built; they are build output, not sources, so they are
+# gitignored and have to be declared here to reach the wheel.
+[tool.setuptools.package-data]
+omle_spark = ["jars/*.jar"]
+
 [tool.setuptools_scm]
 # Two levels down from the git root (spark/python/), so point upward twice.
 root = "../.."
