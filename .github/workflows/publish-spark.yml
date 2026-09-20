@@ -62,17 +62,22 @@ jobs:
           cache: sbt
       - uses: sbt/setup-sbt@v1
 
-      - name: Cross-build the Scala transformer
-        working-directory: omle-runtime/spark
-        # Both Scala versions: PyPI ships Spark 3.x built against 2.12 and 4.x
-        # against 2.13, and a wheel carrying only one fails on the other with
-        # `'JavaPackage' object is not callable`, which names no cause.
-        run: sbt +package
-
       - uses: actions/download-artifact@v4
         with:
           name: omle-runtime-jar
           path: omle-runtime/java/target
+
+      - name: Cross-build the Scala transformer
+        working-directory: omle-runtime/spark
+        # After the download, not before: build.sbt picks the omle-runtime jar
+        # out of java/target as an unmanaged dependency, and the Scala source
+        # imports io.github.openmle.runtime from it. Compiling first fails with
+        # "object runtime is not a member of package io.github.openmle".
+        #
+        # Both Scala versions: PyPI ships Spark 3.x built against 2.12 and 4.x
+        # against 2.13, and a wheel carrying only one fails on the other with
+        # `'JavaPackage' object is not callable`, which names no cause.
+        run: sbt +package
 
       - name: Resolve JNA
         working-directory: omle-runtime/java
