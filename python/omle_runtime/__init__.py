@@ -218,7 +218,10 @@ def _prepare_col_data(df, col_str_mask=None):
         is_str = col_str_mask[i] if col_str_mask is not None else (
             s.dtype == object or pd.api.types.is_string_dtype(s))
         if is_str:
-            col_data.append(s.values)  # numpy object array — C++ reads PyObject* directly
+            # to_numpy(dtype=object), not .values: pandas 3.0 stores strings in
+            # an Arrow-backed StringDtype whose .values is an ArrowStringArray,
+            # not the numpy object array the C++ side reads PyObject* out of.
+            col_data.append(s.to_numpy(dtype=object))
         else:
             col_data.append(np.ascontiguousarray(s.values, dtype=np.float32))
     return col_names, col_data
