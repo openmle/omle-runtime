@@ -1,13 +1,41 @@
 [build-system]
-requires = ["scikit-build-core>=0.3", "setuptools-scm>=8"]
+# pybind11 is a build requirement, not just a convenience: python/CMakeLists.txt
+# probes for it and, when it is missing, prints "omle_ext skipped" and carries
+# on. The build then SUCCEEDS and produces a wheel with no extension module,
+# which only fails later at import. A local build can find an ambient pybind11
+# and hide this; an isolated one (pip, cibuildwheel) cannot.
+requires = ["scikit-build-core>=0.3", "setuptools-scm>=8", "pybind11>=2.12"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "omle-runtime"
 dynamic = ["version"]
-description = "OMLE inference runtime — fast classical ML inference"
+description = "Fast classical ML inference runtime for OMLE models"
 requires-python = ">=3.10"
 dependencies = ["numpy"]
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "OMLE contributors" }]
+keywords = ["machine-learning", "inference", "scikit-learn", "onnx", "runtime"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: C++",
+]
+
+[project.urls]
+Homepage = "https://github.com/openmle/omle-runtime"
+Source = "https://github.com/openmle/omle-runtime"
+Issues = "https://github.com/openmle/omle-runtime/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "pandas"]
@@ -17,7 +45,84 @@ metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
 cmake.build-type = "Release"
 cmake.source-dir = ".."
 cmake.args = ["-DBUILD_PYTHON=ON", "-DBUILD_TESTS=OFF"]
-wheel.packages = ["omleruntime"]
+wheel.packages = ["omle_runtime"]
+
+# One CMake tree shared by every wheel, instead of a fresh temp directory per
+# build. protobuf and Abseil are pure C++ with no Python dependency, so they are
+# identical for cp310 through cp314; without this they are recompiled from
+# source once per interpreter, which is ~90% of each wheel's build time.
+# Switching interpreter changes only the Python cache variables, so CMake
+# reconfigures and rebuilds omle_ext while leaving the dependency objects alone.
+build-dir = "build/cibw"
+
+# ---------------------------------------------------------------------------
+# Binary wheels
+# ---------------------------------------------------------------------------
+# cibuildwheel must be invoked from the directory holding BOTH repositories,
+# with this package passed as the package dir:
+#
+#   cibuildwheel --output-dir wheelhouse omle-runtime/python
+#
+# It copies its working directory into the build container and resolves the
+# package at /project/<pkg dir relative to cwd>, so running it from the parent
+# is what puts omle-runtime (for cmake.source-dir = "..") and the sibling omle
+# repository (for omle.proto) inside the container. Running it from
+# omle-runtime/ instead builds nothing but errors about a missing proto.
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+# musllinux would need protobuf and Abseil rebuilt against musl on top of
+# everything else; glibc and the three desktop platforms cover the users this
+# package has.
+skip = "*-musllinux_* *-win32 *_i686"
+build-verbosity = 1
+
+# OMLE_BUNDLE_DEPS is the whole point of publishing wheels: it statically links
+# protobuf and Abseil, so the wheel carries no reference to a protobuf that the
+# user's machine has to supply. SKBUILD_CMAKE_DEFINE rather than
+# SKBUILD_CMAKE_ARGS, because the latter replaces cmake.args above (dropping
+# BUILD_PYTHON=ON and BUILD_TESTS=OFF) instead of adding to it.
+environment = { SKBUILD_CMAKE_DEFINE = "OMLE_BUNDLE_DEPS=ON" }
+
+# CMake writes omle_ext into the source package directory, and wheel.packages
+# copies that directory verbatim. The interpreters build one after another in
+# the same checkout, so without this the cp311 wheel also ships the cp310
+# extension, the cp312 wheel ships both, and so on — every wheel after the first
+# carrying modules for an ABI it cannot load.
+# {package} is python/, not the repo root: cibuildwheel is invoked from the
+# directory holding BOTH repositories, so {project} is that parent and the
+# script is not under it. Hopping up from {package} keeps this correct whatever
+# the parent directory is called.
+before-build = "python {package}/../scripts/clean_ext.py"
+
+# Import from a temporary directory, so a wheel that silently depends on the
+# source tree or on a system protobuf fails here rather than for a user.
+test-command = "python -c \"import omle_runtime; print('wheel ok', omle_runtime.__file__)\""
+
+[tool.cibuildwheel.linux]
+# C++17 across protobuf, Abseil and this project. manylinux2014's gcc is old
+# enough to make that painful; _2_28 ships gcc 12.
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.windows]
+# delvewheel walks omle_ext.pyd's imports and has to resolve every one. It finds
+# omleruntime.dll nowhere: the DLL is not on PATH, and CMake writes it into the
+# package directory rather than anywhere delvewheel searches by default, so the
+# repair step fails with "Unable to find library: omleruntime.dll" even though
+# the build itself succeeded.
+#
+# --add-path points it at that directory. {package} is an absolute path to
+# python/, so the DLL is at {package}/omle_runtime/omleruntime.dll.
+#
+# The DLL is self-contained already (OMLE_BUNDLE_DEPS links protobuf and Abseil
+# statically), so there is nothing else for delvewheel to vendor beyond the
+# MSVC runtime, which it leaves alone by design.
+repair-wheel-command = "delvewheel repair --add-path {package}/omle_runtime -w {dest_dir} -v {wheel}"
+
+[tool.cibuildwheel.macos]
+# Protobuf and Abseil require a newer minimum than cibuildwheel's default of
+# 10.9, and arm64 starts at 11.0 regardless.
+environment = { SKBUILD_CMAKE_DEFINE = "OMLE_BUNDLE_DEPS=ON", MACOSX_DEPLOYMENT_TARGET = "11.0" }
 
 [tool.setuptools_scm]
 # The package lives in python/ inside the repo; point setuptools-scm at the

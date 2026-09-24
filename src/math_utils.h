@@ -13,6 +13,16 @@ inline bool is_nan_safe(float x) noexcept {
   return (u & 0x7FFFFFFFu) > 0x7F800000u;
 }
 
+// Double overload. Without it a double argument narrows to float to reach the
+// function above, which is the one implicit conversion this test exists to
+// avoid -- and a double NaN payload has no business round-tripping through
+// float to be recognised.
+inline bool is_nan_safe(double x) noexcept {
+  uint64_t u;
+  std::memcpy(&u, &x, sizeof(u));
+  return (u & 0x7FFFFFFFFFFFFFFFull) > 0x7FF0000000000000ull;
+}
+
 }  // namespace omle::rt::impl
 
 #endif  // OMLE_MATH_UTILS_H_

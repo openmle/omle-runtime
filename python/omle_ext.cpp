@@ -10,6 +10,7 @@
 
 namespace py = pybind11;
 using F32Array = py::array_t<float, py::array::c_style | py::array::forcecast>;
+using F64Array = py::array_t<double, py::array::c_style | py::array::forcecast>;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -55,7 +56,8 @@ static void build_col_arrays(const py::list& col_data_py,
                              std::vector<int>& col_types,
                              std::vector<const void*>& col_data_ptrs,
                              std::vector<std::vector<const char*>>& str_bufs,
-                             std::vector<F32Array>& f32_arrays) {
+                             std::vector<F32Array>& f32_arrays,
+                             std::vector<F64Array>& f64_arrays) {
   int nc = (int)col_data_py.size();
   col_types.resize(nc);
   col_data_ptrs.resize(nc);
@@ -79,6 +81,13 @@ static void build_col_arrays(const py::list& col_data_py,
         }
         col_types[c] = OMLE_COL_STRING;
         col_data_ptrs[c] = str_bufs[c].data();
+      } else if (arr.dtype().kind() == 'f' && arr.dtype().itemsize() == 8) {
+        // Hand float64 through untouched. Casting to float32 here and scaling
+        // afterwards is not the same as scaling first and narrowing once; the
+        // ulp of difference is enough to move a value across a split threshold.
+        f64_arrays.push_back(arr.cast<F64Array>());
+        col_types[c] = OMLE_COL_FLOAT64;
+        col_data_ptrs[c] = f64_arrays.back().data();
       } else {
         f32_arrays.push_back(arr.cast<F32Array>());
         col_types[c] = OMLE_COL_FLOAT32;
@@ -207,16 +216,35 @@ PYBIND11_MODULE(omle_ext, m) {
         tensors.reserve(n);
         std::vector<F32Array> f32_arrs;
         f32_arrs.reserve(n);
+        std::vector<F64Array> f64_arrs;
+        f64_arrs.reserve(n);
 
         for (auto [key, val] : inputs_py) {
           name_strs.push_back(key.cast<std::string>());
           names.push_back(name_strs.back().c_str());
-          f32_arrs.push_back(val.cast<F32Array>());
-          auto req = f32_arrs.back().request();
-          int nr = (req.ndim >= 1) ? (int)req.shape[0] : 1;
-          int nc = (req.ndim >= 2) ? (int)req.shape[1] : 1;
-          auto* t = omle_tensor_create_f32(nr, nc,
-                                           static_cast<const float*>(req.ptr));
+          // A float64 array is handed through at full width. Casting every
+          // input to float32 here made this entry point lossy in a way the
+          // column-wise one is not, so the same model scored differently
+          // depending on which path the caller happened to take.
+          const bool is_f64 = py::isinstance<py::array>(val) &&
+                              val.cast<py::array>().dtype().kind() == 'f' &&
+                              val.cast<py::array>().dtype().itemsize() == 8;
+          omle_tensor_t* t = nullptr;
+          if (is_f64) {
+            f64_arrs.push_back(val.cast<F64Array>());
+            auto req = f64_arrs.back().request();
+            int nr = (req.ndim >= 1) ? (int)req.shape[0] : 1;
+            int nc = (req.ndim >= 2) ? (int)req.shape[1] : 1;
+            t = omle_tensor_create_f64(nr, nc,
+                                       static_cast<const double*>(req.ptr));
+          } else {
+            f32_arrs.push_back(val.cast<F32Array>());
+            auto req = f32_arrs.back().request();
+            int nr = (req.ndim >= 1) ? (int)req.shape[0] : 1;
+            int nc = (req.ndim >= 2) ? (int)req.shape[1] : 1;
+            t = omle_tensor_create_f32(nr, nc,
+                                       static_cast<const float*>(req.ptr));
+          }
           if (!t) {
             for (auto* tx : tensors) omle_free_tensor(tx);
             throw std::runtime_error(omle_last_error());
@@ -263,7 +291,9 @@ PYBIND11_MODULE(omle_ext, m) {
         std::vector<const void*> col_data;
         std::vector<std::vector<const char*>> str_bufs;
         std::vector<F32Array> f32_arrs;
-        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs);
+        std::vector<F64Array> f64_arrs;
+        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs,
+                         f64_arrs);
 
         int n_rows = n_rows_from_col_data(col_data_py);
         int n_filter = (int)filter_names_py.size();
@@ -349,7 +379,9 @@ PYBIND11_MODULE(omle_ext, m) {
         std::vector<const void*> col_data;
         std::vector<std::vector<const char*>> str_bufs;
         std::vector<F32Array> f32_arrs;
-        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs);
+        std::vector<F64Array> f64_arrs;
+        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs,
+                         f64_arrs);
         int n_rows = n_rows_from_col_data(col_data_py);
         check(omle_session_bind_columns(
             reinterpret_cast<omle_session_t*>(sess_ptr), n_rows, n_cols,
@@ -399,7 +431,9 @@ PYBIND11_MODULE(omle_ext, m) {
         std::vector<const void*> col_data;
         std::vector<std::vector<const char*>> str_bufs;
         std::vector<F32Array> f32_arrs;
-        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs);
+        std::vector<F64Array> f64_arrs;
+        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs,
+                         f64_arrs);
 
         int n_rows = n_rows_from_col_data(col_data_py);
         auto ro = out.request();
@@ -445,7 +479,9 @@ PYBIND11_MODULE(omle_ext, m) {
         std::vector<const void*> col_data;
         std::vector<std::vector<const char*>> str_bufs;
         std::vector<F32Array> f32_arrs;
-        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs);
+        std::vector<F64Array> f64_arrs;
+        build_col_arrays(col_data_py, col_types, col_data, str_bufs, f32_arrs,
+                         f64_arrs);
 
         int n_rows = n_rows_from_col_data(col_data_py);
         auto ro = out.request();
@@ -466,6 +502,15 @@ PYBIND11_MODULE(omle_ext, m) {
           auto req = data.request();
           auto* t = omle_tensor_create_f32(n_rows, n_cols,
                                            static_cast<const float*>(req.ptr));
+          if (!t) throw std::runtime_error(omle_last_error());
+          return reinterpret_cast<uintptr_t>(t);
+        });
+
+  m.def("tensor_create_f64",
+        [](int n_rows, int n_cols, F64Array data) -> uintptr_t {
+          auto req = data.request();
+          auto* t = omle_tensor_create_f64(n_rows, n_cols,
+                                           static_cast<const double*>(req.ptr));
           if (!t) throw std::runtime_error(omle_last_error());
           return reinterpret_cast<uintptr_t>(t);
         });

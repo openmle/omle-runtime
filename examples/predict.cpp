@@ -1,11 +1,17 @@
 // predict.cpp — minimal CLI for running inference with an OMLE model.
 //
 // Usage:
-//   omle-predict <model.omle> [features.csv]
+//   omle-predict <model.omle> [features.csv] [predictions.csv]
 //
-// If no CSV is supplied, prints model metadata and exits.
-// CSV format: one sample per line, comma-separated float values, no header.
+// If no input CSV is supplied, prints model metadata and exits.
+// Input CSV: one sample per line, comma-separated float values, no header.
+//
+// Predictions go to the output CSV, never to stdout, so the scores stay
+// machine-readable and stdout stays a report: model metadata, then how many
+// records were scored and where they went. Omitting the output path scores the
+// input and reports on it without writing anything.
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -36,7 +42,16 @@ static std::vector<std::vector<float>> read_csv(const std::string& path) {
 
 int main(int argc, char* argv[]) {
   if (argc < 2) {
-    std::fprintf(stderr, "Usage: %s <model.omle> [features.csv]\n", argv[0]);
+    // Basename, not argv[0]: the tool is reached through `omle predict` as
+    // well as directly, and in that case argv[0] is the resolved absolute path
+    // of the executable, which makes for a usage line nobody can read.
+    const char* prog = argv[0];
+    for (const char* c = argv[0]; *c; ++c) {
+      if (*c == '/' || *c == '\\') prog = c + 1;
+    }
+    std::fprintf(stderr,
+                 "Usage: %s <model.omle> [features.csv] [predictions.csv]\n",
+                 prog);
     return 1;
   }
 
@@ -101,22 +116,76 @@ int main(int argc, char* argv[]) {
   auto session = model->create_session();
   session->bind_input("input",
                       omle::rt::Tensor::from_floats(n_rows, n_feat, features));
+
+  const auto t0 = std::chrono::steady_clock::now();
   auto run_st = session->run();
+  const auto elapsed_ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count();
   if (!run_st.ok()) {
     std::fprintf(stderr, "Error running inference: %s\n",
                  run_st.message().c_str());
     return 1;
   }
 
-  for (int i = 0; i < n_rows; ++i) {
-    int col = 0;
-    for (const auto& [name, t] : session->results()) {
-      for (int j = 0; j < t.n_cols; ++j, ++col) {
-        if (col) std::putchar(',');
-        std::printf("%.6f", t.row(i)[j]);
+  // Header names for the output file. An output producing several columns gets
+  // an index suffix, so every column can be identified on its own.
+  std::vector<std::string> col_names;
+  for (const auto& [name, t] : session->results()) {
+    if (t.n_cols == 1) {
+      col_names.push_back(name);
+    } else {
+      for (int j = 0; j < t.n_cols; ++j) {
+        col_names.push_back(name + "_" + std::to_string(j));
       }
     }
-    std::putchar('\n');
+  }
+
+  // Scoring is done at this point, so report it before the write: if the write
+  // then fails, the summary is still an accurate account of what happened.
+  std::printf(
+      "\nScored %d record%s (%d feature%s in, %zu column%s out) in %.2f ms\n",
+      n_rows, n_rows == 1 ? "" : "s", n_feat, n_feat == 1 ? "" : "s",
+      col_names.size(), col_names.size() == 1 ? "" : "s", elapsed_ms);
+
+  if (argc >= 4) {
+    const char* out_path = argv[3];
+    std::ofstream out(out_path);
+    if (!out) {
+      std::fprintf(stderr, "Error: cannot open %s for writing\n", out_path);
+      return 1;
+    }
+
+    for (std::size_t c = 0; c < col_names.size(); ++c) {
+      if (c) out.put(',');
+      out << col_names[c];
+    }
+    out.put('\n');
+
+    char buf[32];
+    for (int i = 0; i < n_rows; ++i) {
+      int col = 0;
+      for (const auto& [name, t] : session->results()) {
+        for (int j = 0; j < t.n_cols; ++j, ++col) {
+          if (col) out.put(',');
+          std::snprintf(buf, sizeof(buf), "%.6f", t.row(i)[j]);
+          out << buf;
+        }
+      }
+      out.put('\n');
+    }
+
+    // A stream error here means a short write — a truncated predictions file
+    // reported as success is the one outcome worth failing loudly for.
+    out.flush();
+    if (!out) {
+      std::fprintf(stderr, "Error: failed writing %s\n", out_path);
+      return 1;
+    }
+    std::printf("Wrote %d row%s to %s\n", n_rows, n_rows == 1 ? "" : "s",
+                out_path);
+  } else {
+    std::puts("No output path given, so predictions were discarded.");
   }
 
   return 0;

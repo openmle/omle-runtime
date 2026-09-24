@@ -33,7 +33,7 @@ Usage
                           [--batch-sizes 1 10 100 1000 10000]
                           [--reps 200]
                           [--warmup 20]
-                          [--threads 1]
+                          [--threads 1] [--min-parallel-rows 64]
 
 Run train_models.py first to generate model files.
 """
@@ -87,7 +87,7 @@ sys.path.insert(0, str(_ROOT / "python"))
 sys.path.insert(0, str(_SIBLING / "omle" / "src"))
 sys.path.insert(0, str(_SIBLING / "omle-convert" / "src"))
 
-import omleruntime as omr
+import omle_runtime as omr
 
 MODELS_DIR = _BENCH / "models"
 
@@ -159,6 +159,69 @@ def check_correctness(
     return max_abs <= 1e-4, max_abs, max_rel
 
 
+def check_ort_correctness(
+    task: str,
+    native_sk_model,
+    ort_sess,
+    ort_input_name: str,
+    X_test: np.ndarray,
+) -> tuple[bool, float, float]:
+    """Compare native model vs ONNX Runtime predictions on the full test set.
+
+    ORT was previously timed but never verified, so a bad .onnx export would
+    have benchmarked as fast and silently wrong. Outputs are selected by name,
+    not position: a regressor emits one tensor, a classifier emits a label
+    column plus probabilities, and only the float output is comparable.
+
+    Returns (passed, max_abs_err, max_rel_err).
+    """
+    X = np.ascontiguousarray(X_test, dtype=np.float32)
+    names = [o.name for o in ort_sess.get_outputs()]
+    outs = ort_sess.run(None, {ort_input_name: X})
+    by_name = dict(zip(names, outs))
+
+    def as_float_array(raw):
+        """Normalise an ORT output to a float32 array.
+
+        Classifier probabilities arrive in two shapes depending on the
+        converter: onnxmltools emits a tensor for XGBoost but a ZipMap — a list
+        of {class_label: probability} dicts — for LightGBM. Keys are sorted so
+        the column order matches predict_proba.
+        """
+        if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+            keys = sorted(raw[0].keys())
+            return np.asarray([[row[k] for k in keys] for row in raw],
+                              dtype=np.float32)
+        return np.asarray(raw, dtype=np.float32)
+
+    def float_output():
+        for n in ("probabilities", "output_probability", "variable"):
+            if n in by_name:
+                return as_float_array(by_name[n])
+        # Fall back to the first output that is not an integer label.
+        for arr in outs:
+            if isinstance(arr, list) or np.asarray(arr).dtype.kind == "f":
+                return as_float_array(arr)
+        raise RuntimeError(f"no float output among {names}")
+
+    got = float_output()
+    if task == "regression":
+        ref_pred = native_sk_model.predict(X).astype(np.float32).ravel()
+        ort_pred = got.ravel()
+    elif task == "binary":
+        ref_pred = native_sk_model.predict_proba(X)[:, 1].astype(np.float32).ravel()
+        ort_pred = got[:, 1] if got.ndim == 2 and got.shape[1] == 2 else got.ravel()
+    else:  # multiclass / mnist
+        ref_pred = native_sk_model.predict_proba(X).astype(np.float32).ravel()
+        ort_pred = got.ravel()
+
+    abs_err = np.abs(ref_pred - ort_pred)
+    max_abs = float(abs_err.max())
+    denom   = np.abs(ref_pred)
+    max_rel = float((abs_err / np.where(denom > 1e-6, denom, 1e-6)).max())
+    return max_abs <= 1e-4, max_abs, max_rel
+
+
 # ── Benchmark runners ─────────────────────────────────────────────────────────
 
 def bench_task(
@@ -168,6 +231,7 @@ def bench_task(
     reps: int,
     warmup: int,
     n_threads: int,
+    min_parallel_rows: int,
     framework: str = "xgboost",
 ) -> dict:
     import joblib
@@ -191,8 +255,12 @@ def bench_task(
             return {}
 
         native_sk = joblib.load(str(pkl_path))
+        native_sk.set_params(n_jobs=n_threads)
         _booster  = xgb.Booster()
         _booster.load_model(str(json_path))
+        # Left unset, XGBoost predicts on every core while OMLE is held to
+        # n_threads, which turns a kernel comparison into a core-count one.
+        _booster.set_param({"nthread": n_threads})
 
         def _bp_fn(X):
             return _booster.inplace_predict(X)
@@ -212,10 +280,11 @@ def bench_task(
             return {}
 
         native_sk = joblib.load(str(pkl_path))
+        native_sk.set_params(n_jobs=n_threads)
         _booster  = lgb.Booster(model_file=str(txt_path))
 
         def _bp_fn(X):
-            return _booster.predict(X)
+            return _booster.predict(X, num_threads=n_threads)
 
     rss_after_native = rss_mb()
 
@@ -224,7 +293,7 @@ def bench_task(
     ort_input_name = "float_input"
     if _ORT_AVAILABLE and onnx_path.exists():
         _ort_opts = _ort.SessionOptions()
-        _ort_opts.intra_op_num_threads = 1
+        _ort_opts.intra_op_num_threads = n_threads
         _ort_opts.inter_op_num_threads = 1
         ort_sess = _ort.InferenceSession(
             str(onnx_path),
@@ -235,7 +304,8 @@ def bench_task(
 
     rss_after_ort = rss_mb()
 
-    omle_model   = omr.Model.load(str(pb_path), n_threads=n_threads)
+    omle_model   = omr.Model.load(str(pb_path), n_threads=n_threads,
+                                  min_parallel_rows=min_parallel_rows)
     omle_session = omle_model.create_session()
 
     rss_after_omle = rss_mb()
@@ -254,9 +324,18 @@ def bench_task(
     print(f"\n  Correctness check ({n_test} test rows):")
     ok, max_abs, max_rel = check_correctness(task, native_sk, omle_model, X_test)
     status = "PASS" if ok else "FAIL"
-    print(f"    max_abs_err = {max_abs:.2e}  max_rel_err = {max_rel:.2e}  [{status}]")
+    print(f"    OMLE: max_abs_err = {max_abs:.2e}  max_rel_err = {max_rel:.2e}  [{status}]")
     if not ok:
-        print(f"    WARNING: max_abs_err {max_abs:.2e} > 1e-4 tolerance")
+        print(f"    WARNING: OMLE max_abs_err {max_abs:.2e} > 1e-4 tolerance")
+
+    ort_ok = None
+    if ort_sess is not None:
+        ort_ok, ort_abs, ort_rel = check_ort_correctness(
+            task, native_sk, ort_sess, ort_input_name, X_test)
+        print(f"    ORT : max_abs_err = {ort_abs:.2e}  max_rel_err = {ort_rel:.2e} "
+              f" [{'PASS' if ort_ok else 'FAIL'}]")
+        if not ort_ok:
+            print(f"    WARNING: ORT max_abs_err {ort_abs:.2e} > 1e-4 tolerance")
 
     rows: list[dict] = []
     for bs in batch_sizes:
@@ -321,6 +400,8 @@ def bench_task(
 # ── Report ────────────────────────────────────────────────────────────────────
 
 def fmt_us(us: float) -> str:
+    if not us:
+        return "       —"
     if us >= 1e6:
         return f"{us/1e6:8.2f}s "
     if us >= 1000:
@@ -329,6 +410,8 @@ def fmt_us(us: float) -> str:
 
 
 def fmt_tput(n: int, us: float) -> str:
+    if not us:
+        return "      —"
     t = throughput(n, us)
     if t >= 1e6:
         return f"{t/1e6:6.2f}M/s"
@@ -422,6 +505,7 @@ def bench_task_adult(
     reps: int,
     warmup: int,
     n_threads: int,
+    min_parallel_rows: int,
 ) -> dict:
     """Benchmark the Adult Census mixed-type sklearn pipeline.
 
@@ -448,6 +532,7 @@ def bench_task_adult(
     rss_baseline = rss_mb()
 
     native_pipe = joblib.load(str(pkl_path))
+    native_pipe.named_steps["clf"].set_params(n_jobs=n_threads)
     ct = native_pipe.named_steps["prep"]
     num_cols       = list(ct.transformers_[0][2])
     cat_cols       = list(ct.transformers_[1][2])
@@ -460,7 +545,7 @@ def bench_task_adult(
     ort_input_names: set = set()
     if _ORT_AVAILABLE and onnx_path.exists():
         _ort_opts = _ort.SessionOptions()
-        _ort_opts.intra_op_num_threads = 1
+        _ort_opts.intra_op_num_threads = n_threads
         _ort_opts.inter_op_num_threads = 1
         ort_sess = _ort.InferenceSession(
             str(onnx_path),
@@ -471,7 +556,8 @@ def bench_task_adult(
 
     rss_after_ort = rss_mb()
 
-    omle_model   = omr.Model.load(str(pb_path), n_threads=n_threads)
+    omle_model   = omr.Model.load(str(pb_path), n_threads=n_threads,
+                                  min_parallel_rows=min_parallel_rows)
     omle_session = omle_model.create_session()
 
     rss_after_omle = rss_mb()
@@ -489,18 +575,54 @@ def bench_task_adult(
     # Correctness check: compare sklearn vs OMLE — DataFrame passed directly
     print(f"\n  Correctness check ({n_test} test rows):")
     ref_prob = native_pipe.predict_proba(X_test)[:, 1].astype(np.float32)
-    # Use omle_model (not session) — model.predict_proba filters to y_prob only: shape (n, 1)
-    omle_raw = omle_model.predict_proba(X_test)
-    omle_prob = np.asarray(omle_raw, dtype=np.float32)[:, 0]
+    # Take the positive class from whatever shape comes back. This used to
+    # assume (n, 1) and index [:, 0]; predict_proba actually returns (n, 2) for
+    # this model, so the check was comparing p(class 0) against sklearn's
+    # p(class 1) and reporting an error of ~1 - 2p on every row. The models
+    # agreed all along.
+    omle_raw = np.asarray(omle_model.predict_proba(X_test), dtype=np.float32)
+    omle_prob = omle_raw[:, 1] if omle_raw.shape[1] > 1 else omle_raw[:, 0]
     abs_err = np.abs(ref_prob - omle_prob)
     max_abs = float(abs_err.max())
     denom   = np.abs(ref_prob)
     max_rel = float((abs_err / np.where(denom > 1e-6, denom, 1e-6)).max())
-    # Tolerance 5e-2: float32 StandardScaler vs float64 sklearn can shift borderline splits
+    # Tolerance 5e-2 rather than 1e-4: the model declares its numeric columns as
+    # float32, so values are rounded at the input boundary while sklearn carries
+    # them in float64, and a sample sitting on a split threshold can be routed
+    # the other way.
     ok = max_abs <= 5e-2
-    print(f"    max_abs_err = {max_abs:.2e}  max_rel_err = {max_rel:.2e}  [{'PASS' if ok else 'FAIL'}]")
+    print(f"    OMLE: max_abs_err = {max_abs:.2e}  max_rel_err = {max_rel:.2e}  [{'PASS' if ok else 'FAIL'}]")
     if not ok:
-        print(f"    WARNING: max_abs_err {max_abs:.2e} > 5e-2 tolerance")
+        print(f"    WARNING: OMLE max_abs_err {max_abs:.2e} > 5e-2 tolerance")
+
+    # ORT on the same rows. Its input is a per-column dict rather than one
+    # tensor, so the batch helper is reused to build it.
+    if ort_sess is not None:
+        ort_names = {i.name for i in ort_sess.get_inputs()}
+        ort_full = _make_ort_input_adult(X_test, num_cols, cat_cols, ort_names)
+        ort_outs = ort_sess.run(None, ort_full)
+        ort_by_name = dict(zip([o.name for o in ort_sess.get_outputs()], ort_outs))
+        ort_p = None
+        for cand in ("probabilities", "output_probability"):
+            if cand in ort_by_name:
+                ort_p = ort_by_name[cand]
+                break
+        if ort_p is None:
+            ort_p = next((o for o in ort_outs if np.asarray(o).dtype.kind == "f"), None)
+        # skl2onnx emits classifier probabilities as a list of dicts (ZipMap).
+        if isinstance(ort_p, list):
+            ort_prob = np.asarray([row[1] for row in ort_p], dtype=np.float32)
+        else:
+            arr = np.asarray(ort_p, dtype=np.float32)
+            ort_prob = arr[:, 1] if arr.ndim == 2 and arr.shape[1] > 1 else arr.ravel()
+        ort_abs_err = np.abs(ref_prob - ort_prob)
+        ort_abs = float(ort_abs_err.max())
+        ort_rel = float((ort_abs_err / np.where(denom > 1e-6, denom, 1e-6)).max())
+        ort_ok = ort_abs <= 5e-2
+        print(f"    ORT : max_abs_err = {ort_abs:.2e}  max_rel_err = {ort_rel:.2e} "
+              f" [{'PASS' if ort_ok else 'FAIL'}]")
+        if not ort_ok:
+            print(f"    WARNING: ORT max_abs_err {ort_abs:.2e} > 5e-2 tolerance")
 
     rows: list[dict] = []
     for bs in batch_sizes:
@@ -711,7 +833,12 @@ def main() -> None:
     parser.add_argument("--warmup",  type=int, default=20,
                         help="warmup passes before timing (default: 20)")
     parser.add_argument("--threads", type=int, default=1,
-                        help="worker threads for OMLE runtime (default: 1)")
+                        help="thread budget for EVERY engine — native, ORT and "
+                             "OMLE alike (default: 1)")
+    parser.add_argument("--min-parallel-rows", type=int, default=64,
+                        help="OMLE rows-per-thread needed before it parallelises; "
+                             "the runtime only splits a batch of at least "
+                             "threads*this (default: 64)")
     parser.add_argument("--csv",     type=Path, default=None,
                         help="write results CSV to this path")
     args = parser.parse_args()
@@ -735,6 +862,7 @@ def main() -> None:
                 reps=args.reps,
                 warmup=args.warmup,
                 n_threads=args.threads,
+                min_parallel_rows=args.min_parallel_rows,
             )
             all_results[("pipeline", "adult", size)] = result
             print_table("adult", size, result, "pipeline")
@@ -754,6 +882,7 @@ def main() -> None:
                     reps=args.reps,
                     warmup=args.warmup,
                     n_threads=args.threads,
+                    min_parallel_rows=args.min_parallel_rows,
                     framework=framework,
                 )
                 all_results[(framework, task, size)] = result

@@ -56,7 +56,7 @@ cmake --build . --target omle_ext -j8
 ```
 
 Without this the CMake output says `pybind11 not found — omle_ext skipped`
-and `import omleruntime` fails. Worth knowing because omle-convert's
+and `import omle_runtime` fails. Worth knowing because omle-convert's
 runtime-verification tests silently *skip* rather than fail when the extension
 is missing — a passing test run with several hundred skips usually means this.
 
@@ -73,9 +73,8 @@ src/                engine internals
   operator_registry.*  the omle.core / feature / text operator implementations
   nodes/            structured model bodies (tree ensemble, linear, SVM, …)
   expression_eval.* the elementwise expression DSL
-python/             pybind11 module + the omleruntime package
+python/             pybind11 module + the omle_runtime package
 java/               JNI bindings (Maven)
-spark/              Spark integration (Scala)
 tests/              GoogleTest suites, one per area
 ```
 

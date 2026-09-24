@@ -1,5 +1,5 @@
 """
-omleruntime — fast inference for classical ML models.
+omle_runtime — fast inference for classical ML models.
 
 pybind11 bindings over the omle C API.  Requires the compiled
 omle_ext extension module (built with cmake -DBUILD_PYTHON=ON).
@@ -12,7 +12,7 @@ present, so ``Model`` can be used as the final step of a
 
 Quick start::
 
-    import omleruntime as omr
+    import omle_runtime as omr
     import numpy as np
 
     model   = omr.load("model.omle", n_threads=4)   # thread-safe
@@ -36,19 +36,63 @@ Quick start::
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Dict, List, Union
 
 import numpy as np
 
+
+# ---------------------------------------------------------------------------
+# Windows DLL search path
+# ---------------------------------------------------------------------------
+# omle_ext.pyd links omleruntime.dll, which in turn links libprotobuf and
+# Abseil. Since Python 3.8 an extension module's dependent DLLs are resolved
+# against the system directories, the directory holding the .pyd, and whatever
+# os.add_dll_directory() has registered — PATH is deliberately not consulted.
+# omleruntime.dll sits next to the .pyd so it resolves on its own, but protobuf
+# and Abseil usually live in a conda or vcpkg prefix that is only on PATH, and
+# without this the import fails with a bare "DLL load failed".
+#
+# The cookies returned by add_dll_directory() unregister the directory when
+# closed, so they are parked in a module-level list to keep them alive.
+_dll_directories = []
+
+if sys.platform == "win32":
+    _candidates = [os.path.dirname(os.path.abspath(__file__))]
+    # An explicit override comes first; it is the only knob available when the
+    # dependencies live somewhere PATH does not mention.
+    _candidates += os.environ.get("OMLE_RUNTIME_DLL_PATH", "").split(os.pathsep)
+    _candidates += os.environ.get("PATH", "").split(os.pathsep)
+
+    _seen = set()
+    for _d in _candidates:
+        if not _d:
+            continue
+        try:
+            _key = os.path.normcase(os.path.abspath(_d))
+            if _key in _seen or not os.path.isdir(_key):
+                continue
+            _seen.add(_key)
+            _dll_directories.append(os.add_dll_directory(_key))
+        except OSError:
+            # An unreadable or malformed PATH entry is not worth failing over.
+            continue
+
 # pybind11 extension — required
 try:
-    from omleruntime import omle_ext as _ext
+    from omle_runtime import omle_ext as _ext
 except ImportError as _e:
     raise ImportError(
-        "omleruntime: pybind11 extension 'omle_ext' not found.\n"
-        "Build with:  cmake -DBUILD_PYTHON=ON .. && make omle_ext"
+        "omle_runtime: could not import the pybind11 extension 'omle_ext'.\n"
+        f"Underlying error: {_e}\n"
+        "If the module is missing, build it with:\n"
+        "    cmake -DBUILD_PYTHON=ON .. && cmake --build . --target omle_ext\n"
+        "If it was found but failed to load, a dependent shared library "
+        "(omle_runtime, protobuf, Abseil) is not on the loader's search path; "
+        "on Windows point OMLE_RUNTIME_DLL_PATH at the directory holding them."
     ) from _e
 
 
@@ -174,16 +218,48 @@ def _prepare_col_data(df, col_str_mask=None):
         is_str = col_str_mask[i] if col_str_mask is not None else (
             s.dtype == object or pd.api.types.is_string_dtype(s))
         if is_str:
-            col_data.append(s.values)  # numpy object array — C++ reads PyObject* directly
+            # to_numpy(dtype=object), not .values: pandas 3.0 stores strings in
+            # an Arrow-backed StringDtype whose .values is an ArrowStringArray,
+            # not the numpy object array the C++ side reads PyObject* out of.
+            arr = s.to_numpy(dtype=object)
+            # Missing values arrive as a float nan, which the C++ reader hands
+            # to PyUnicode_AsUTF8 and fails on with a bare TypeError. Converters
+            # stringify categories with str(), so a NaN category is stored in
+            # the model as "nan" -- spell it the same way here so the lookup
+            # matches instead of crashing.
+            if s.isna().any():
+                arr = np.where(pd.isna(arr), "nan", arr)
+            col_data.append(arr)
         else:
-            col_data.append(np.ascontiguousarray(s.values, dtype=np.float32))
+            # Keep float64 columns at full width. Narrowing here and scaling
+            # afterwards is not the same as scaling in float64 and narrowing
+            # once, and the ulp of difference is enough to move a value across
+            # a tree split threshold. Anything else still goes over as float32.
+            vals = s.to_numpy()
+            # Integers go over as float64 too. float32 carries only 24 bits of
+            # mantissa, so an int64 column silently loses values above 2**24 --
+            # 16777217 arrives as 16777216. float64 is exact to 2**53, which
+            # covers ids, counts and epoch-second timestamps. Beyond that a
+            # true integer column type would be needed.
+            dt = (np.float64
+                  if vals.dtype == np.float64 or vals.dtype.kind in "iu"
+                  else np.float32)
+            col_data.append(np.ascontiguousarray(vals, dtype=dt))
     return col_names, col_data
 
 
 def _session_run_array(session_ptr: int, arr: np.ndarray,
                        output_specs: List[OutputSpec], input_name: str) -> np.ndarray:
-    """Session run with a single float32 numpy input array."""
-    t_ptr = _ext.tensor_create_f32(arr.shape[0], arr.shape[1], arr)
+    """Session run with a single dense numpy input array.
+
+    Binds float64 input as float64. Forcing float32 here would make a Session
+    score differently from Model.predict on the same array, since that path
+    now carries the caller's width through.
+    """
+    if arr.dtype == np.float64:
+        t_ptr = _ext.tensor_create_f64(arr.shape[0], arr.shape[1], arr)
+    else:
+        t_ptr = _ext.tensor_create_f32(arr.shape[0], arr.shape[1], arr)
     try:
         _ext.session_clear_inputs(session_ptr)
         _ext.session_bind_input(session_ptr, input_name, t_ptr)
@@ -203,14 +279,21 @@ def _coerce(
     X,
     expected_features: int = 0,
 ) -> np.ndarray:
-    """Return X as a float32 C-contiguous 2-D array, validating feature count.
+    """Return X as a C-contiguous 2-D float array, validating feature count.
 
     Accepts numpy arrays, pandas DataFrames (numeric), scipy sparse matrices,
     Python list / nested list, or :class:`Tensor`.
     A 1-D input is treated as a single sample ``(1, n_features)``.
+
+    float64 input stays float64; everything else becomes float32. The dense
+    entry path used to narrow unconditionally, which meant an all-numeric
+    DataFrame lost precision before the first operator ran -- the columns
+    path (taken only when some column is a string) already kept full width,
+    so the same model scored differently depending on whether it happened to
+    have a string feature.
     """
     # Fast path: already the right format — avoid all numpy overhead
-    if (isinstance(X, np.ndarray) and X.dtype == np.float32
+    if (isinstance(X, np.ndarray) and X.dtype in (np.float32, np.float64)
             and X.ndim == 2 and X.flags['C_CONTIGUOUS']):
         if expected_features > 0 and X.shape[1] != expected_features:
             raise ValueError(
@@ -235,7 +318,14 @@ def _coerce(
                 X = X.values
         except ImportError:
             pass
-        arr = np.asarray(X, dtype=np.float32)
+        arr = np.asarray(X)
+        # Integers go over as float64 for the same reason _prepare_col_data
+        # sends them that way: float32 carries 24 bits of mantissa, so an id
+        # or count above 2**24 would arrive as a different number.
+        want = (np.float64
+                if arr.dtype == np.float64 or arr.dtype.kind in "iu"
+                else np.float32)
+        arr = np.asarray(arr, dtype=want)
 
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
@@ -247,7 +337,8 @@ def _coerce(
             f"X has {arr.shape[1]} feature(s) but model expects {expected_features}."
         )
 
-    return np.ascontiguousarray(arr, dtype=np.float32)
+    dt = np.float64 if arr.dtype == np.float64 else np.float32
+    return np.ascontiguousarray(arr, dtype=dt)
 
 
 def _maybe_squeeze(arr: np.ndarray, squeeze: bool, n_outputs: int) -> np.ndarray:
@@ -311,12 +402,17 @@ class Tensor:
 
     def __repr__(self) -> str:
         tag = f"'{self.name}'" if self.name else "unnamed"
-        return f"<omleruntime.Tensor {tag} shape={self.shape}>"
+        return f"<omle_runtime.Tensor {tag} shape={self.shape}>"
 
 
 # ---------------------------------------------------------------------------
 # Model
 # ---------------------------------------------------------------------------
+
+def _restore_model(data: bytes, n_threads: int, min_parallel_rows: int) -> "Model":
+    return Model.load_bytes(data, n_threads=n_threads,
+                            min_parallel_rows=min_parallel_rows)
+
 
 class Model:
     """Immutable model handle — thread-safe.
@@ -329,6 +425,9 @@ class Model:
         self._ptr     = ptr
         self._inputs  = inputs
         self._outputs = outputs
+        self._model_bytes = None
+        self._n_threads = 1
+        self._min_parallel_rows = 64
 
     @classmethod
     def _from_ptr(cls, ptr: int) -> "Model":
@@ -352,15 +451,33 @@ class Model:
 
     @classmethod
     def load(cls, path: str, *, n_threads: int = 1, min_parallel_rows: int = 64) -> "Model":
-        """Load from a protobuf binary file."""
-        ptr = _ext.model_load_file(str(path), n_threads, min_parallel_rows)
-        return cls._from_ptr(ptr)
+        """Load from a protobuf binary file.
+
+        Reads the file in Python rather than handing the path to the
+        extension, so the Model keeps the bytes it was built from and can be
+        pickled.  A consequence worth knowing: an unreadable path raises the
+        matching OSError subclass — FileNotFoundError, PermissionError,
+        IsADirectoryError — while a readable file whose contents are not a
+        valid model still raises RuntimeError from load_bytes.
+        """
+        with open(path, "rb") as file:
+            return cls.load_bytes(file.read(), n_threads=n_threads,
+                                  min_parallel_rows=min_parallel_rows)
 
     @classmethod
     def load_bytes(cls, data: bytes, *, n_threads: int = 1, min_parallel_rows: int = 64) -> "Model":
         """Load from a bytes object (e.g. from a database or object store)."""
         ptr = _ext.model_load_memory(data, n_threads, min_parallel_rows)
-        return cls._from_ptr(ptr)
+        model = cls._from_ptr(ptr)
+        model._model_bytes = data
+        model._n_threads = n_threads
+        model._min_parallel_rows = min_parallel_rows
+        return model
+
+    def __reduce__(self):
+        """Rebuild the native handle from the embedded model on unpickle."""
+        return (_restore_model, (self._model_bytes, self._n_threads,
+                                 self._min_parallel_rows))
 
     def __del__(self) -> None:
         if getattr(self, "_ptr", None):
@@ -784,7 +901,7 @@ class Session:
         return t
 
     def __repr__(self) -> str:
-        return f"<omleruntime.Session features={self.num_inputs} outputs={self.num_outputs}>"
+        return f"<omle_runtime.Session features={self.num_inputs} outputs={self.num_outputs}>"
 
 
 # ---------------------------------------------------------------------------
@@ -801,7 +918,8 @@ def load(path: str, *, n_threads: int = 1, min_parallel_rows: int = 64) -> Model
     n_threads : int
         Worker threads for ``model.predict()`` (0 = auto).
     min_parallel_rows : int
-        Minimum rows per thread before parallelism activates.
+        Minimum rows per thread before parallelism activates; a batch is split
+        only once it holds ``n_threads * min_parallel_rows`` rows.
     """
     return Model.load(path, n_threads=n_threads, min_parallel_rows=min_parallel_rows)
 
@@ -822,6 +940,3 @@ __all__ = [
     "load",
     "load_bytes",
 ]
-
-# Alias so the class can be discovered as a scikit-learn-style estimator.
-OMLEModel = Model

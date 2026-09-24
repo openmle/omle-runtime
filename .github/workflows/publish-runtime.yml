@@ -1,0 +1,135 @@
+name: Publish omle-runtime
+
+# Publishes omle-runtime (python/) to PyPI.
+#
+# It compiles a native extension, so it needs a wheel per platform and per
+# interpreter, and each is built with OMLE_BUNDLE_DEPS=ON so protobuf and Abseil
+# are linked in statically. Without that the wheel records absolute paths to the
+# build machine's protobuf and fails to import anywhere else.
+#
+# Two details about how cibuildwheel is invoked here:
+#
+#   * It runs from the directory holding BOTH repositories, passing
+#     omle-runtime/python as the package. cibuildwheel copies its working
+#     directory into the container and places the package at
+#     /project/<path relative to cwd>, so running it from the parent is what
+#     makes cmake.source-dir = ".." resolve and what puts the sibling omle
+#     repository (which owns omle.proto) inside the container.
+#   * fetch-depth: 0, because the version comes from git tags via setuptools-scm.
+#     A shallow clone yields a 0.1.dev1+g<sha> version, which is not what should
+#     be uploaded to an index.
+#
+# This file publishes omle-runtime alone. The PySpark wrapper moved to the
+# openmle/omle-spark repository and publishes itself from there, so a PyPI
+# Trusted Publisher for omle-runtime need only name this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: "Index to publish to"
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+  push:
+    tags: ["v*"]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. One wheel per platform per interpreter.
+  # ---------------------------------------------------------------------------
+  wheels:
+    name: Wheels (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+          # Free arm64 Linux runners are public-repository only; drop this entry
+          # if that does not apply, at the cost of aarch64 wheels.
+          - os: ubuntu-24.04-arm
+            target: linux-aarch64
+          # Apple silicon only. Intel macOS (macos-13) is deliberately not
+          # built: `pip install omle-runtime` on an Intel Mac will fall back to
+          # building from source, which needs a native toolchain.
+          - os: macos-latest
+            target: macos-arm64
+          - os: windows-latest
+            target: windows-x86_64
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+          fetch-depth: 0
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build wheels
+        # Run from the workspace root, not from omle-runtime/ — see the note at
+        # the top of this file. No protobuf is installed anywhere here: the
+        # build vendors its own, and having none on the runner means it cannot
+        # quietly fall back to a system copy.
+        working-directory: ${{ github.workspace }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install cibuildwheel==4.2.1
+          python -m cibuildwheel --output-dir wheelhouse omle-runtime/python
+
+      - name: Show what was built
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        # List the contents, not just the filenames. A wheel missing its native
+        # library still builds, uploads and installs — it only fails at import,
+        # by which point it is on an index. This is the cheapest place to see
+        # that the .pyd and the shared library are both actually in there.
+        run: |
+          ls -la wheelhouse/
+          echo
+          for whl in wheelhouse/*.whl; do
+            echo "=== $whl"
+            python -c "import sys,zipfile;[print(f'  {i.file_size:>12,}  {i.filename}') for i in sorted(zipfile.ZipFile(sys.argv[1]).infolist(),key=lambda i:i.filename) if not i.filename.endswith('/')]" "$whl"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-omle-runtime-${{ matrix.target }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 2. Publish.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    needs: wheels
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'push' && 'pypi' || inputs.index }}
+    permissions:
+      # Required for Trusted Publishing: the job mints a short-lived OIDC token
+      # instead of holding a long-lived API token in secrets. Configure the
+      # publisher once at
+      # https://pypi.org/manage/project/omle-runtime/settings/publishing/
+      # naming this repository, publish-runtime.yml, and the environment above.
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-omle-runtime-*
+          path: dist
+          merge-multiple: true
+
+      - run: ls -la dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ (github.event_name == 'workflow_dispatch' && inputs.index == 'testpypi') && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}

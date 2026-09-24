@@ -697,6 +697,14 @@ static std::unordered_map<std::string, omle::rt::Tensor> build_columns_map(
       for (int r = 0; r < n_rows; ++r)
         t.str_at(r, 0) = (strs && strs[r]) ? strs[r] : "";
       inputs.emplace(col_names[c], std::move(t));
+    } else if (col_types[c] == OMLE_COL_FLOAT64) {
+      const double* data = static_cast<const double*>(col_data[c]);
+      omle::rt::Tensor t =
+          omle::rt::Tensor::dense(omle::rt::DataType::Float64, n_rows, 1);
+      if (data)
+        std::memcpy(t.f64_ptr(), data,
+                    static_cast<std::size_t>(n_rows) * sizeof(double));
+      inputs.emplace(col_names[c], std::move(t));
     } else {
       const float* data = static_cast<const float*>(col_data[c]);
       omle::rt::Tensor t(n_rows, 1);
@@ -760,6 +768,12 @@ static void bind_columns_impl(omle_session_s* session, int n_rows, int n_cols,
       t = omle::rt::Tensor::strings(n_rows, 1);
       for (int r = 0; r < n_rows; ++r)
         t.str_at(r, 0) = (strs && strs[r]) ? strs[r] : "";
+    } else if (col_types[c] == OMLE_COL_FLOAT64) {
+      const double* data = static_cast<const double*>(col_data[c]);
+      t = omle::rt::Tensor::dense(omle::rt::DataType::Float64, n_rows, 1);
+      if (data)
+        std::memcpy(t.f64_ptr(), data,
+                    static_cast<std::size_t>(n_rows) * sizeof(double));
     } else {
       const float* data = static_cast<const float*>(col_data[c]);
       t = omle::rt::Tensor(n_rows, 1);
@@ -857,6 +871,13 @@ extern "C" omle_status_t omle_session_register_columns(
     for (int i = 0; i < n_cols; ++i) {
       if (col_types[i] == OMLE_COL_STRING)
         rc->cached_inputs[rc->names[i]] = omle::rt::Tensor::strings(1, 1);
+      else if (col_types[i] == OMLE_COL_FLOAT64)
+        // Allocate at the declared width. These tensors are filled in place on
+        // every call, so a float32 cell here would either narrow the column or
+        // hold double bytes under a Float32 dtype -- which every later read
+        // would then misinterpret.
+        rc->cached_inputs[rc->names[i]] =
+            omle::rt::Tensor::scalar(omle::rt::DataType::Float64, 0.0);
       else
         rc->cached_inputs[rc->names[i]] = omle::rt::Tensor::f32_scalar(0.f);
     }
@@ -896,6 +917,15 @@ extern "C" omle_status_t omle_session_predict_registered_f32(
               static_cast<const char* const*>(col_data[c]);
           for (int r = 0; r < n_rows; ++r)
             t.str_at(r, 0) = (strs && strs[r]) ? strs[r] : "";
+        } else if (rc.types[c] == OMLE_COL_FLOAT64) {
+          // The caller declared this column float64, so its buffer holds
+          // doubles. Reading it as const float* did not narrow the values, it
+          // reinterpreted the bytes -- every other column entry point already
+          // honours the declared type, and this one silently did not.
+          const double* d = static_cast<const double*>(col_data[c]);
+          if (d)
+            std::memcpy(t.f64_ptr(), d,
+                        static_cast<std::size_t>(n_rows) * sizeof(double));
         } else {
           const float* d = static_cast<const float*>(col_data[c]);
           if (d) {
@@ -918,6 +948,12 @@ extern "C" omle_status_t omle_session_predict_registered_f32(
               static_cast<const char* const*>(col_data[c]);
           for (int r = 0; r < n_rows; ++r)
             t.str_at(r, 0) = (strs && strs[r]) ? strs[r] : "";
+        } else if (rc.types[c] == OMLE_COL_FLOAT64) {
+          t = omle::rt::Tensor::dense(omle::rt::DataType::Float64, n_rows, 1);
+          const double* d = static_cast<const double*>(col_data[c]);
+          if (d)
+            std::memcpy(t.f64_ptr(), d,
+                        static_cast<std::size_t>(n_rows) * sizeof(double));
         } else {
           t = omle::rt::Tensor(n_rows, 1);
           const float* d = static_cast<const float*>(col_data[c]);

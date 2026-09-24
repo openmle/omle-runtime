@@ -39,9 +39,27 @@ void GraphExecutor::predict_chunk(const float* features, float* output,
                                "' not produced");
     const Tensor& t = vs.get(spec.name);
     const int stride = t.n_cols;
-    for (int r = 0; r < n_rows; ++r)
-      std::memcpy(output + (row_start + r) * total_output_cols + col_off,
-                  t.row(r), stride * sizeof(float));
+    // The dense API hands back float32, so a float64 output is converted here
+    // rather than copied. It has to be a conversion: the raw memcpy this
+    // replaced reinterpreted double storage as float, and operators that keep
+    // their input's width now propagate float64 all the way to the outputs.
+    if (t.dtype == omle::rt::DataType::Float64) {
+      for (int r = 0; r < n_rows; ++r) {
+        float* dst = output + (row_start + r) * total_output_cols + col_off;
+        const double* s = t.f64_row(r);
+        for (int c = 0; c < stride; ++c) dst[c] = static_cast<float>(s[c]);
+      }
+    } else if (t.dtype == omle::rt::DataType::Float32 && !t.is_sparse()) {
+      for (int r = 0; r < n_rows; ++r)
+        std::memcpy(output + (row_start + r) * total_output_cols + col_off,
+                    t.row(r), stride * sizeof(float));
+    } else {
+      for (int r = 0; r < n_rows; ++r) {
+        float* dst = output + (row_start + r) * total_output_cols + col_off;
+        for (int c = 0; c < stride; ++c)
+          dst[c] = static_cast<float>(t.get(r, c));
+      }
+    }
     col_off += stride;
   }
 }
@@ -87,16 +105,32 @@ void GraphExecutor::run_graph(
   if (!slots_present && inputs.size() == 1) {
     // Single flat tensor supplied — split columns into individual named slots.
     const auto& src = inputs.begin()->second;
+    // Splitting one wide tensor into named slots is a reshape, not a
+    // conversion: narrowing to float32 here discarded a float64 caller's
+    // precision before the first operator ran, which is the same mistake the
+    // per-name branch below already avoids.
+    const bool keep_f64 =
+        src.dtype == omle::rt::DataType::Float64 && !src.is_sparse();
     const omle::rt::Tensor flat =
-        (src.dtype != omle::rt::DataType::Float32 || src.is_sparse())
-            ? src.to_float32()
-            : src;
+        keep_f64
+            ? src
+            : ((src.dtype != omle::rt::DataType::Float32 || src.is_sparse())
+                   ? src.to_float32()
+                   : src);
     const int nf = static_cast<int>(input_names.size());
     for (int f = 0; f < nf; ++f) {
-      Tensor col(n_rows, 1);
-      for (int r = 0; r < n_rows; ++r)
-        col.f32_ptr()[r] = flat.row(row_start + r)[f];
-      vs.put(input_names[f], std::move(col));
+      if (keep_f64) {
+        Tensor col =
+            omle::rt::Tensor::dense(omle::rt::DataType::Float64, n_rows, 1);
+        for (int r = 0; r < n_rows; ++r)
+          col.f64_ptr()[r] = flat.f64_row(row_start + r)[f];
+        vs.put(input_names[f], std::move(col));
+      } else {
+        Tensor col(n_rows, 1);
+        for (int r = 0; r < n_rows; ++r)
+          col.f32_ptr()[r] = flat.row(row_start + r)[f];
+        vs.put(input_names[f], std::move(col));
+      }
     }
   } else {
     for (const auto& name : input_names) {
@@ -121,16 +155,27 @@ void GraphExecutor::run_graph(
           vs.put(name, std::move(slice));
         }
       } else {
+        const bool keep_f64 =
+            src.dtype == omle::rt::DataType::Float64 && !src.is_sparse();
         const omle::rt::Tensor t =
-            (src.dtype != omle::rt::DataType::Float32 || src.is_sparse())
-                ? src.to_float32()
-                : src;
+            keep_f64
+                ? src
+                : ((src.dtype != omle::rt::DataType::Float32 || src.is_sparse())
+                       ? src.to_float32()
+                       : src);
 
         // Always produce an owned tensor so nodes can safely modify in-place.
         // For view tensors (from_buffer) t.row() via const is valid; the slice
         // path materializes even when row_start==0 covers the whole tensor.
         if (row_start == 0 && row_end == t.n_rows && !t.is_view()) {
           vs.put(name, t);
+        } else if (keep_f64) {
+          Tensor slice = omle::rt::Tensor::dense(omle::rt::DataType::Float64,
+                                                 n_rows, t.n_cols);
+          std::memcpy(
+              slice.f64_ptr(), t.f64_row(row_start),
+              static_cast<std::size_t>(n_rows) * t.n_cols * sizeof(double));
+          vs.put(name, std::move(slice));
         } else {
           Tensor slice(n_rows, t.n_cols);
           std::memcpy(

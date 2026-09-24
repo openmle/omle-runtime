@@ -5,8 +5,6 @@ Components (in dependency order):
   cpp      — C++ static library + unit tests  (cmake)
   python   — Python shared library (libomleruntime.dylib) + Python tests
   java     — Java bindings jar + JUnit tests  (maven)
-  spark    — Spark Scala jar + ScalaTest      (sbt)
-  spark-py — PySpark Python package + pytest
 
 Usage:
   python scripts/build_and_test.py                 # all components
@@ -115,63 +113,19 @@ def build_java(run_tests: bool) -> None:
     goal = "test" if run_tests else "package"
 
     # Java tests load the shared library via JNA; point it at the built dylib.
-    lib_dir = ROOT / "python" / "omleruntime"
+    lib_dir = ROOT / "python" / "omle_runtime"
     run([mvn, goal,
          f"-Djna.library.path={lib_dir}",
          "--no-transfer-progress"],
         cwd=ROOT / "java")
 
 
-def build_spark(run_tests: bool) -> None:
-    """Build Spark Scala jar with sbt and optionally run ScalaTest."""
-    header("Spark Scala — sbt package / test")
-
-    # Java jar must exist first (sbt unmanagedJars references it).
-    java_jar = ROOT / "java" / "target" / "omle-runtime-0.1.0.jar"
-    if not java_jar.exists():
-        print(f"  Java jar not found at {java_jar}; building Java first.")
-        build_java(run_tests=False)
-
-    sbt = find_executable("sbt")
-    lib_dir = ROOT / "python" / "omleruntime"
-    task = "test" if run_tests else "package"
-
-    run([sbt,
-         f"-Djna.library.path={lib_dir}",
-         task],
-        cwd=ROOT / "spark")
-
-
-def build_spark_python(run_tests: bool) -> None:
-    """Install PySpark Python package in dev mode and run pytest."""
-    header("Spark Python — pip install + pytest")
-
-    python    = sys.executable
-    spark_py  = ROOT / "spark" / "python"
-    omle_src = ROOT.parent / "omle" / "src"
-
-    run([python, "-m", "pip", "install", "-e", ".", "--quiet"],
-        cwd=spark_py)
-
-    if run_tests:
-        env = {"PYTHONPATH": str(omle_src)}
-        run([python, "-m", "pytest", "tests/", "-v"],
-            cwd=spark_py,
-            env=env)
-
-
-# ---------------------------------------------------------------------------
-# Component registry
-# ---------------------------------------------------------------------------
-
-ALL_COMPONENTS = ["cpp", "python", "java", "spark", "spark-py"]
+ALL_COMPONENTS = ["cpp", "python", "java"]
 
 BUILDERS = {
     "cpp":      lambda bt, t: build_cpp(bt, t),
     "python":   lambda bt, t: build_python(bt, t),
     "java":     lambda bt, t: build_java(t),
-    "spark":    lambda bt, t: build_spark(t),
-    "spark-py": lambda bt, t: build_spark_python(t),
 }
 
 # ---------------------------------------------------------------------------

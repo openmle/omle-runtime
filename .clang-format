@@ -1,0 +1,8 @@
+# Google C++ Style, as CONTRIBUTING.md and the pre-commit config both state:
+# 2-space indent, 80 columns, pointers bound to the type (`const char* p`).
+# Both of those are implied by BasedOnStyle, so this file stays minimal.
+#
+# It has to exist. Without it clang-format silently falls back to LLVM style,
+# which binds pointers to the name (`const char *p`) and realigns trailing
+# comments — reformatting all 73 C++ files the moment the hook runs.
+BasedOnStyle: Google

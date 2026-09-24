@@ -1,10 +1,11 @@
 """
-Tests for the omleruntime Python API (pybind11 extension module).
+Tests for the omle_runtime Python API (pybind11 extension module).
 
 Run with:
     cd python && python3 -m pytest tests/ -v
 """
 
+import pickle
 import sys
 from pathlib import Path
 
@@ -15,8 +16,8 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
-import omleruntime as omr
-from omleruntime import (
+import omle_runtime as omr
+from omle_runtime import (
     DataType,
     InputSpec,
     Model,
@@ -86,6 +87,26 @@ class TestTensor:
 
 
 class TestLoad:
+    @pytest.mark.parametrize("from_file", [False, True])
+    def test_pickle_roundtrip(self, model_bytes_2f, tmp_path, from_file):
+        path = tmp_path / "model.omle"
+        path.write_bytes(model_bytes_2f)
+        model = omr.load(path, n_threads=2, min_parallel_rows=8) if from_file else (
+            load_bytes(model_bytes_2f, n_threads=2, min_parallel_rows=8)
+        )
+        restored = pickle.loads(pickle.dumps(model))
+        assert restored._ptr != model._ptr
+        assert (restored._n_threads, restored._min_parallel_rows) == (2, 8)
+        np.testing.assert_allclose(restored.predict([[0.0, 1.0]]), model.predict([[0.0, 1.0]]))
+
+    def test_joblib_roundtrip(self, model_bytes_2f, tmp_path):
+        joblib = pytest.importorskip("joblib")
+        model = load_bytes(model_bytes_2f)
+        path = tmp_path / "model.joblib"
+        joblib.dump(model, path)
+        restored = joblib.load(path)
+        np.testing.assert_allclose(restored.predict([[1.0, 1.0]]), model.predict([[1.0, 1.0]]))
+
     def test_load_bytes_returns_model(self, model_bytes_2f):
         m = load_bytes(model_bytes_2f)
         assert isinstance(m, Model)
@@ -105,8 +126,20 @@ class TestLoad:
             load_bytes(b"not protobuf")
 
     def test_load_file_missing_raises(self):
-        with pytest.raises(RuntimeError):
+        # FileNotFoundError, not RuntimeError. load() opens the file in Python
+        # now — that is what lets a Model carry its own bytes and be pickled —
+        # so a missing path surfaces as the ordinary OSError subclass, with
+        # errno and filename attached, rather than whatever the extension
+        # raised. Corrupt contents still come back as RuntimeError from the
+        # loader below; the two failures are genuinely different.
+        with pytest.raises(FileNotFoundError):
             omr.load("/nonexistent/does_not_exist.omle")
+
+    def test_load_directory_raises(self):
+        # Same path, different errno: an OSError subclass either way, so
+        # `except OSError` catches both.
+        with pytest.raises(OSError):
+            omr.load("/tmp")
 
     def test_multiple_loads_are_independent(self, model_bytes_2f):
         m1 = load_bytes(model_bytes_2f)

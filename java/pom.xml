@@ -7,18 +7,49 @@
 
   <groupId>io.github.openmle</groupId>
   <artifactId>omle-runtime</artifactId>
-  <version>0.1.0</version>
+  <!-- Maven has no equivalent of setuptools-scm, so the version is a property
+       that CI overrides from the git tag: mvn -Drevision=0.2.0 ... The default
+       below is what a local build without a tag produces, and marks it a
+       snapshot so it can never be mistaken for a release. -->
+  <version>${revision}</version>
   <packaging>jar</packaging>
 
   <name>OMLE Runtime Java Bindings</name>
   <description>JNA bindings over the omle C API</description>
+  <url>https://github.com/openmle/omle-runtime</url>
+
+  <!-- url, licenses, developers and scm are not optional: Maven Central
+       rejects a release without them. -->
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <name>OMLE</name>
+      <organization>openmle</organization>
+      <organizationUrl>https://github.com/openmle</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:https://github.com/openmle/omle-runtime.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/openmle/omle-runtime.git</developerConnection>
+    <url>https://github.com/openmle/omle-runtime</url>
+    <tag>HEAD</tag>
+  </scm>
 
   <properties>
     <maven.compiler.release>11</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <revision>0.1.0-SNAPSHOT</revision>
     <jna.version>5.14.0</jna.version>
     <!-- Directory containing libomleruntime.dylib / libomleruntime.so -->
-    <omle.lib.dir>${project.basedir}/../python/omleruntime</omle.lib.dir>
+    <omle.lib.dir>${project.basedir}/../python/omle_runtime</omle.lib.dir>
   </properties>
 
   <dependencies>
@@ -39,6 +70,32 @@
 
   <build>
     <plugins>
+      <!-- A pom containing ${revision} would be installed and deployed with that
+           literal string in it, which no consumer can resolve. flatten writes a
+           pom with the property substituted and hands that to install/deploy;
+           it does not affect `mvn package`. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>flatten-maven-plugin</artifactId>
+        <version>1.8.0</version>
+        <configuration>
+          <updatePomFile>true</updatePomFile>
+          <flattenMode>resolveCiFriendliesOnly</flattenMode>
+        </configuration>
+        <executions>
+          <execution>
+            <id>flatten</id>
+            <phase>process-resources</phase>
+            <goals><goal>flatten</goal></goals>
+          </execution>
+          <execution>
+            <id>flatten.clean</id>
+            <phase>clean</phase>
+            <goals><goal>clean</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
@@ -52,4 +109,76 @@
       </plugin>
     </plugins>
   </build>
+
+  <!-- Activated by `mvn -Prelease deploy`. Kept out of the default build
+       because javadoc is slow and gpg needs a key that only the release
+       workflow has. -->
+  <profiles>
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>3.4.0</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals><goal>jar-no-fork</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>3.12.0</version>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals><goal>jar</goal></goals>
+              </execution>
+            </executions>
+          </plugin>
+
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.8</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals><goal>sign</goal></goals>
+                <configuration>
+                  <!-- The key is fed in on stdin by the workflow rather than
+                       from a tty, so gpg must not try to prompt. -->
+                  <gpgArguments>
+                    <arg>--pinentry-mode</arg>
+                    <arg>loopback</arg>
+                  </gpgArguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+
+          <!-- OSSRH was retired in June 2025; this uploads to the Central
+               Publisher Portal. The server id matches the <server> entry the
+               workflow writes into settings.xml. -->
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.11.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>true</autoPublish>
+              <waitUntil>published</waitUntil>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>

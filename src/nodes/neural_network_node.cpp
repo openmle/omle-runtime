@@ -9,6 +9,7 @@
 
 #include "../post_transform.h"
 #include "../simd_traits.h"
+#include "../width_dispatch.h"
 
 namespace omle::rt::impl {
 
@@ -207,13 +208,13 @@ omle::rt::Status NeuralNetworkNode::execute(ValueStore& vs, int n_rows) const {
   auto features = gather_slots(vs, in_names, n_rows, dt);
 
   const int n_out = impl_->n_outputs();
+  const bool f64 = (dt == omle::rt::DataType::Float64);
   omle::rt::Tensor scores = omle::rt::Tensor::dense(dt, n_rows, n_out);
-  impl_->compute(dt == omle::rt::DataType::Float64
-                     ? (const void*)features.f64_ptr()
-                     : (const void*)features.f32_ptr(),
-                 n_rows,
-                 dt == omle::rt::DataType::Float64 ? (void*)scores.f64_ptr()
-                                                   : (void*)scores.f32_ptr());
+  with_width(f64, [&](auto tag) {
+    using T = decltype(tag);
+    impl_->compute((const void*)data_w<T>(features), n_rows,
+                   (void*)data_w<T>(scores));
+  });
 
   // Classification: two output names → [y_pred, y_prob].
   // y_prob: full probability matrix; y_pred: class label or threshold.
@@ -224,49 +225,36 @@ omle::rt::Status NeuralNetworkNode::execute(ValueStore& vs, int n_rows) const {
     if (n_out == 1) {
       // Binary: expand (n,1) → (n,2): [1-p, p]
       omle::rt::Tensor prob2 = omle::rt::Tensor::dense(dt, n_rows, 2);
-      if (dt == omle::rt::DataType::Float64) {
-        const double* sp = scores.f64_ptr();
-        double* dp = prob2.f64_ptr();
+      with_width(f64, [&](auto tag) {
+        using T = decltype(tag);
+        const T* sp = data_w<T>(scores);
+        T* dp = data_w<T>(prob2);
         for (int r = 0; r < n_rows; ++r) {
-          dp[r * 2] = 1.0 - sp[r];
+          dp[r * 2] = T(1) - sp[r];
           dp[r * 2 + 1] = sp[r];
-          pred_ptr[r] = sp[r] >= 0.5 ? 1 : 0;
+          pred_ptr[r] = sp[r] >= T(0.5) ? 1 : 0;
         }
-      } else {
-        const float* sp = scores.f32_ptr();
-        float* dp = prob2.f32_ptr();
-        for (int r = 0; r < n_rows; ++r) {
-          dp[r * 2] = 1.f - sp[r];
-          dp[r * 2 + 1] = sp[r];
-          pred_ptr[r] = sp[r] >= 0.5f ? 1 : 0;
-        }
-      }
+      });
       vs.put(out_names[1], std::move(prob2));
     } else {
       omle::rt::Tensor prob = scores;
       vs.put(out_names[1], std::move(prob));
-      if (dt == omle::rt::DataType::Float64) {
-        const double* sp = scores.f64_ptr();
+      with_width(f64, [&](auto tag) {
+        using T = decltype(tag);
+        const T* sp = data_w<T>(scores);
         for (int r = 0; r < n_rows; ++r) {
-          const double* row = sp + r * n_out;
+          const T* row = sp + r * n_out;
           pred_ptr[r] = static_cast<int64_t>(
               std::distance(row, std::max_element(row, row + n_out)));
         }
-      } else {
-        const float* sp = scores.f32_ptr();
-        for (int r = 0; r < n_rows; ++r) {
-          const float* row = sp + r * n_out;
-          pred_ptr[r] = static_cast<int64_t>(
-              std::distance(row, std::max_element(row, row + n_out)));
-        }
-      }
+      });
     }
     vs.put(out_names[0], std::move(pred));
   } else {
-    if (dt == omle::rt::DataType::Float64)
-      scatter_outputs(vs, out_names, scores.f64_ptr(), n_rows, n_out);
-    else
-      scatter_outputs(vs, out_names, scores.f32_ptr(), n_rows, n_out);
+    with_width(f64, [&](auto tag) {
+      using T = decltype(tag);
+      scatter_outputs(vs, out_names, data_w<T>(scores), n_rows, n_out);
+    });
   }
   return {};
 }

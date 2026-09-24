@@ -12,27 +12,27 @@ namespace omle::rt::impl {
 
 namespace {
 
-using EvalFn = std::vector<float> (*)(const std::vector<std::vector<float>>&,
-                                      int);
+using EvalFn = std::vector<double> (*)(const std::vector<std::vector<double>>&,
+                                       int);
 
 #define UNARY(name, expr)           \
   {name, [](const auto& a, int n) { \
-     std::vector<float> r(n);       \
+     std::vector<double> r(n);      \
      for (int i = 0; i < n; ++i) {  \
-       float x = a[0][i];           \
+       double x = a[0][i];          \
        r[i] = (expr);               \
      }                              \
      return r;                      \
    }}
 
-#define BINARY(name, expr)             \
-  {name, [](const auto& a, int n) {    \
-     std::vector<float> r(n);          \
-     for (int i = 0; i < n; ++i) {     \
-       float x = a[0][i], y = a[1][i]; \
-       r[i] = (expr);                  \
-     }                                 \
-     return r;                         \
+#define BINARY(name, expr)              \
+  {name, [](const auto& a, int n) {     \
+     std::vector<double> r(n);          \
+     for (int i = 0; i < n; ++i) {      \
+       double x = a[0][i], y = a[1][i]; \
+       r[i] = (expr);                   \
+     }                                  \
+     return r;                          \
    }}
 
 static const std::unordered_map<std::string, EvalFn> fn_table = {
@@ -40,21 +40,21 @@ static const std::unordered_map<std::string, EvalFn> fn_table = {
     BINARY("subtract", x - y),
     BINARY("multiply", x* y),
     BINARY("divide",
-           y != 0.0f ? x / y : std::numeric_limits<float>::quiet_NaN()),
+           y != 0.0f ? x / y : std::numeric_limits<double>::quiet_NaN()),
     UNARY("negate", -x),
     UNARY("abs", std::abs(x)),
     BINARY("mod", std::fmod(x, y)),
     UNARY("exp", std::exp(x)),
     UNARY("exp2", std::exp2(x)),
     UNARY("log",
-          x > 0.0f ? std::log(x) : std::numeric_limits<float>::quiet_NaN()),
+          x > 0.0f ? std::log(x) : std::numeric_limits<double>::quiet_NaN()),
     UNARY("log2",
-          x > 0.0f ? std::log2(x) : std::numeric_limits<float>::quiet_NaN()),
+          x > 0.0f ? std::log2(x) : std::numeric_limits<double>::quiet_NaN()),
     UNARY("log10",
-          x > 0.0f ? std::log10(x) : std::numeric_limits<float>::quiet_NaN()),
+          x > 0.0f ? std::log10(x) : std::numeric_limits<double>::quiet_NaN()),
     UNARY("log1p", std::log1p(x)),
     UNARY("sqrt",
-          x >= 0.0f ? std::sqrt(x) : std::numeric_limits<float>::quiet_NaN()),
+          x >= 0.0f ? std::sqrt(x) : std::numeric_limits<double>::quiet_NaN()),
     UNARY("cbrt", std::cbrt(x)),
     BINARY("pow", std::pow(x, y)),
     UNARY("square", x* x),
@@ -90,7 +90,7 @@ static const std::unordered_map<std::string, EvalFn> fn_table = {
     // Spark SQLTransformer aliases
     BINARY("sub", x - y),
     BINARY("mul", x* y),
-    BINARY("div", y != 0.0f ? x / y : std::numeric_limits<float>::quiet_NaN()),
+    BINARY("div", y != 0.0f ? x / y : std::numeric_limits<double>::quiet_NaN()),
     UNARY("neg", -x),
     BINARY("greater_than", x > y ? 1.0f : 0.0f),
     BINARY("less_than", x < y ? 1.0f : 0.0f),
@@ -99,10 +99,10 @@ static const std::unordered_map<std::string, EvalFn> fn_table = {
     UNARY("not", x == 0.0f ? 1.0f : 0.0f),
 };
 
-omle::rt::StatusOr<std::vector<float>> eval_apply(const ExprApply& apply,
-                                                  const ValueStore& vs,
-                                                  int n_rows) {
-  std::vector<std::vector<float>> args;
+omle::rt::StatusOr<std::vector<double>> eval_apply(const ExprApply& apply,
+                                                   const ValueStore& vs,
+                                                   int n_rows) {
+  std::vector<std::vector<double>> args;
   args.reserve(apply.args.size());
   for (const auto& a : apply.args) {
     ASSIGN_OR_RETURN(auto col, eval_expr(*a, vs, n_rows));
@@ -119,19 +119,19 @@ omle::rt::StatusOr<std::vector<float>> eval_apply(const ExprApply& apply,
                                   : fn;
 
   if (fn_base == "if" && args.size() == 3) {
-    std::vector<float> r(n_rows);
+    std::vector<double> r(n_rows);
     for (int i = 0; i < n_rows; ++i)
       r[i] = (args[0][i] != 0.0f) ? args[1][i] : args[2][i];
     return r;
   }
   if (fn_base == "clamp" && args.size() == 3) {
-    std::vector<float> r(n_rows);
+    std::vector<double> r(n_rows);
     for (int i = 0; i < n_rows; ++i)
       r[i] = std::max(args[1][i], std::min(args[0][i], args[2][i]));
     return r;
   }
   if (fn_base == "coalesce") {
-    std::vector<float> r(n_rows, std::numeric_limits<float>::quiet_NaN());
+    std::vector<double> r(n_rows, std::numeric_limits<double>::quiet_NaN());
     for (int k = 0; k < (int)args.size(); ++k)
       for (int i = 0; i < n_rows; ++i)
         if (is_nan_safe(r[i]) && !is_nan_safe(args[k][i])) r[i] = args[k][i];
@@ -139,19 +139,19 @@ omle::rt::StatusOr<std::vector<float>> eval_apply(const ExprApply& apply,
   }
   if ((fn_base == "fill_missing" || fn_base == "replace_missing") &&
       args.size() == 2) {
-    std::vector<float> r(n_rows);
+    std::vector<double> r(n_rows);
     for (int i = 0; i < n_rows; ++i)
       r[i] = is_nan_safe(args[0][i]) ? args[1][i] : args[0][i];
     return r;
   }
   if (fn_base == "leaky_relu" && args.size() >= 1) {
-    float alpha = args.size() >= 2 ? args[1][0] : 0.01f;
-    std::vector<float> r(n_rows);
+    double alpha = args.size() >= 2 ? args[1][0] : 0.01;
+    std::vector<double> r(n_rows);
     for (int i = 0; i < n_rows; ++i)
       r[i] = args[0][i] > 0.0f ? args[0][i] : alpha * args[0][i];
     return r;
   }
-  // String functions: return NaN (string ops not supported in float expr
+  // String functions: return NaN (string ops not supported in numeric expr
   // pipeline).
   static const std::unordered_set<std::string> string_fns = {
       "concat",    "lower",         "upper",          "trim",     "ltrim",
@@ -162,7 +162,8 @@ omle::rt::StatusOr<std::vector<float>> eval_apply(const ExprApply& apply,
       "encode",    "format_string", "printf",         "nvl",      "nvl2",
   };
   if (string_fns.count(fn_base))
-    return std::vector<float>(n_rows, std::numeric_limits<float>::quiet_NaN());
+    return std::vector<double>(n_rows,
+                               std::numeric_limits<double>::quiet_NaN());
 
   auto it = fn_table.find(fn_base);
   if (it != fn_table.end()) return it->second(args, n_rows);
@@ -181,7 +182,7 @@ omle::rt::StatusOr<std::vector<float>> eval_apply(const ExprApply& apply,
       ValueStore fn_vs = vs.child_scope(&vs);
       for (std::size_t p = 0; p < uf.params.size(); ++p) {
         Tensor col(n_rows, 1);
-        col.set_floats(std::move(args[p]));
+        col.set_doubles(std::move(args[p]));
         fn_vs.put(uf.params[p], std::move(col));
       }
       return eval_expr(*uf.body, fn_vs, n_rows);
@@ -217,23 +218,22 @@ const UserFunctionMap* UserFunctionContext::current() noexcept {
 // Public implementation
 // -----------------------------------------------------------------------
 
-omle::rt::StatusOr<std::vector<float>> eval_expr(const Expr& expr,
-                                                 const ValueStore& vs,
-                                                 int n_rows) {
+omle::rt::StatusOr<std::vector<double>> eval_expr(const Expr& expr,
+                                                  const ValueStore& vs,
+                                                  int n_rows) {
   return std::visit(
-      [&](const auto& node) -> omle::rt::StatusOr<std::vector<float>> {
+      [&](const auto& node) -> omle::rt::StatusOr<std::vector<double>> {
         using T = std::decay_t<decltype(node)>;
 
         if constexpr (std::is_same_v<T, ExprLiteral>) {
-          return std::vector<float>(n_rows, node.value.as_float());
+          return std::vector<double>(n_rows, node.value.as_double());
         } else if constexpr (std::is_same_v<T, ExprColumn>) {
           const auto& t = vs.get(node.name);
           if (t.is_string())
-            return std::vector<float>(n_rows,
-                                      std::numeric_limits<float>::quiet_NaN());
-          std::vector<float> out(n_rows);
-          for (int i = 0; i < n_rows; ++i)
-            out[i] = static_cast<float>(t.get(i, 0));
+            return std::vector<double>(
+                n_rows, std::numeric_limits<double>::quiet_NaN());
+          std::vector<double> out(n_rows);
+          for (int i = 0; i < n_rows; ++i) out[i] = t.get(i, 0);
           return out;
         } else {
           return eval_apply(node, vs, n_rows);
@@ -256,10 +256,10 @@ omle::rt::StatusOr<std::vector<uint8_t>> eval_pred(const Pred& pred,
 
         if constexpr (std::is_same_v<T, PredSimple>) {
           const auto& col = vs.get(node.column);
-          const float thr = node.value.as_float();
+          const double thr = node.value.as_double();
           std::vector<uint8_t> r(n_rows);
           for (int i = 0; i < n_rows; ++i) {
-            const float v = col.at(i, 0);
+            const double v = col.get(i, 0);
             if (node.op == SimpleOp::IsMissing) {
               r[i] = is_nan_safe(v) ? 1 : 0;
               continue;
@@ -300,11 +300,11 @@ omle::rt::StatusOr<std::vector<uint8_t>> eval_pred(const Pred& pred,
 
         if constexpr (std::is_same_v<T, PredSet>) {
           const auto& col = vs.get(node.column);
-          std::unordered_set<float> vset;
-          for (const auto& sv : node.values) vset.insert(sv.as_float());
+          std::unordered_set<double> vset;
+          for (const auto& sv : node.values) vset.insert(sv.as_double());
           std::vector<uint8_t> r(n_rows);
           for (int i = 0; i < n_rows; ++i) {
-            bool found = vset.count(col.at(i, 0)) > 0;
+            bool found = vset.count(col.get(i, 0)) > 0;
             r[i] = ((node.op == SetOp::In) ? found : !found) ? 1 : 0;
           }
           return r;

@@ -102,6 +102,30 @@ omle::rt::Status ModelSchemaNode::execute(ValueStore& vs, int n_rows) const {
     const Tensor& src = vs.get(features[0].source);
     if (!src.is_string()) {
       const int nf = static_cast<int>(features.size());
+      // A float64 source keeps its width. The schema policies (missing,
+      // invalid, outlier) are decided on the float32 view because their
+      // compiled sets are float-keyed, but a value the schema leaves alone is
+      // written back undegraded -- narrowing every feature here is what made
+      // this node, the first one to touch every input, silently reinterpret
+      // double storage as float.
+      if (src.dtype == omle::rt::DataType::Float64) {
+        Tensor batch =
+            omle::rt::Tensor::dense(omle::rt::DataType::Float64, n_rows, nf);
+        double* out = batch.f64_ptr();
+        for (int r = 0; r < n_rows; ++r) {
+          double* row = out + r * nf;
+          for (int f = 0; f < nf; ++f) {
+            const double raw = src.f64_at(r, features[f].col);
+            const float adj =
+                apply_schema(features[f], static_cast<float>(raw));
+            row[f] = (adj == static_cast<float>(raw))
+                         ? raw
+                         : static_cast<double>(adj);
+          }
+        }
+        vs.put(batch_key, std::move(batch));
+        return {};
+      }
       Tensor batch(n_rows, nf);
       float* out = batch.f32_ptr();
       for (int r = 0; r < n_rows; ++r) {
@@ -119,6 +143,19 @@ omle::rt::Status ModelSchemaNode::execute(ValueStore& vs, int n_rows) const {
     // String tensors have no numeric schema to apply — pass through as-is.
     if (src.is_string()) {
       if (feat.name != feat.source) vs.put(feat.name, src);
+      continue;
+    }
+    if (src.dtype == omle::rt::DataType::Float64) {
+      Tensor out =
+          omle::rt::Tensor::dense(omle::rt::DataType::Float64, n_rows, 1);
+      double* dp = out.f64_ptr();
+      for (int r = 0; r < n_rows; ++r) {
+        const double raw = src.f64_at(r, feat.col);
+        const float adj = apply_schema(feat, static_cast<float>(raw));
+        dp[r] =
+            (adj == static_cast<float>(raw)) ? raw : static_cast<double>(adj);
+      }
+      vs.put(feat.name, std::move(out));
       continue;
     }
     Tensor out(n_rows, 1);

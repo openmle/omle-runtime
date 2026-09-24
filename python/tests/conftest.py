@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).parent
-sys.path.insert(0, str(HERE.parent))  # omleruntime package
+sys.path.insert(0, str(HERE.parent))  # omle_runtime package
 
 # Use the omle Python IR for fixture generation to stay in sync with the
 # current proto format (NameRef for NodeInput.name, Tensor sub-messages for
@@ -83,7 +83,7 @@ def model_bytes_2f():
 
 @pytest.fixture(scope="session")
 def model(model_bytes_2f):
-    import omleruntime as omr
+    import omle_runtime as omr
     return omr.load_bytes(model_bytes_2f)
 
 
@@ -149,7 +149,7 @@ def label_encoder_model_bytes():
 
 @pytest.fixture(scope="session")
 def label_encoder_model(label_encoder_model_bytes):
-    import omleruntime as omr
+    import omle_runtime as omr
     return omr.load_bytes(label_encoder_model_bytes)
 
 
@@ -219,5 +219,5 @@ def mixed_model_bytes():
 
 @pytest.fixture(scope="session")
 def mixed_model(mixed_model_bytes):
-    import omleruntime as omr
+    import omle_runtime as omr
     return omr.load_bytes(mixed_model_bytes)
