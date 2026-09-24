@@ -126,8 +126,20 @@ class TestLoad:
             load_bytes(b"not protobuf")
 
     def test_load_file_missing_raises(self):
-        with pytest.raises(RuntimeError):
+        # FileNotFoundError, not RuntimeError. load() opens the file in Python
+        # now — that is what lets a Model carry its own bytes and be pickled —
+        # so a missing path surfaces as the ordinary OSError subclass, with
+        # errno and filename attached, rather than whatever the extension
+        # raised. Corrupt contents still come back as RuntimeError from the
+        # loader below; the two failures are genuinely different.
+        with pytest.raises(FileNotFoundError):
             omr.load("/nonexistent/does_not_exist.omle")
+
+    def test_load_directory_raises(self):
+        # Same path, different errno: an OSError subclass either way, so
+        # `except OSError` catches both.
+        with pytest.raises(OSError):
+            omr.load("/tmp")
 
     def test_multiple_loads_are_independent(self, model_bytes_2f):
         m1 = load_bytes(model_bytes_2f)

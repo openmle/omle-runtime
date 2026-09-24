@@ -451,7 +451,15 @@ class Model:
 
     @classmethod
     def load(cls, path: str, *, n_threads: int = 1, min_parallel_rows: int = 64) -> "Model":
-        """Load from a protobuf binary file."""
+        """Load from a protobuf binary file.
+
+        Reads the file in Python rather than handing the path to the
+        extension, so the Model keeps the bytes it was built from and can be
+        pickled.  A consequence worth knowing: an unreadable path raises the
+        matching OSError subclass — FileNotFoundError, PermissionError,
+        IsADirectoryError — while a readable file whose contents are not a
+        valid model still raises RuntimeError from load_bytes.
+        """
         with open(path, "rb") as file:
             return cls.load_bytes(file.read(), n_threads=n_threads,
                                   min_parallel_rows=min_parallel_rows)

@@ -428,7 +428,21 @@ TEST_F(SchemaTest, Float64KeepsPrecisionFloat32WouldLose) {
   // float32 rounds it to 1.1180340051651001, and that ulp is enough to put a
   // scaled value on the wrong side of a split threshold.
   const double exact = 1.118033988749895;
-  ASSERT_NE(exact, static_cast<double>(static_cast<float>(exact)));
+
+  // volatile, because this is a precondition the optimiser is allowed to
+  // delete. Both toolchains build with fast math — /fp:fast on MSVC,
+  // -ffast-math elsewhere — which permits dropping an intermediate rounding,
+  // so MSVC folded static_cast<double>(static_cast<float>(exact)) back to
+  // exact and the assertion compared a value with itself:
+  //
+  //   Expected: (exact) != (static_cast<double>(static_cast<float>(exact))),
+  //   actual: 1.1180339887498949 vs 1.1180339887498949
+  //
+  // A volatile store has to happen, so the narrowing does too. The assertion
+  // is only here to prove the constant is one float32 cannot hold — if it ever
+  // stops holding, the real check below would be passing for the wrong reason.
+  volatile float narrowed = static_cast<float>(exact);
+  ASSERT_NE(exact, static_cast<double>(narrowed));
 
   ModelSchemaNode node;
   SchemaFeature f;
