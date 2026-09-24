@@ -11,6 +11,7 @@
 
 #include "../post_transform.h"
 #include "../simd_traits.h"
+#include "../width_dispatch.h"
 
 namespace omle::rt::impl {
 
@@ -325,10 +326,11 @@ omle::rt::Status NaiveBayesNode::execute(ValueStore& vs, int n_rows) const {
   Tensor prob =
       omle::rt::Tensor::dense(omle::rt::DataType::Float32, n_rows, nc);
 
-  impl_->compute(dt == omle::rt::DataType::Float64
-                     ? (const void*)features.f64_ptr()
-                     : (const void*)features.f32_ptr(),
-                 n_rows, pred.f32_ptr(), prob.f32_ptr());
+  with_width(dt == omle::rt::DataType::Float64, [&](auto tag) {
+    using T = decltype(tag);
+    impl_->compute((const void*)data_w<T>(features), n_rows, pred.f32_ptr(),
+                   prob.f32_ptr());
+  });
 
   if (!out_names.empty()) vs.put(out_names[0], std::move(pred));
   if (out_names.size() >= 2) vs.put(out_names[1], std::move(prob));

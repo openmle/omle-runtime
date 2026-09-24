@@ -381,3 +381,115 @@ TEST_F(SchemaTest, FeaturesFromDifferentSources) {
   EXPECT_FLOAT_EQ(vs.get("b").at(0, 0), 10.f);
   EXPECT_FLOAT_EQ(vs.get("b").at(1, 0), 20.f);
 }
+
+// -----------------------------------------------------------------------
+// Float64 inputs
+//
+// The schema node is the first node to run and it touches every feature, so
+// reading a Float64 source through the float32 accessors reinterprets double
+// storage as float and corrupts the whole model. These cover both the
+// per-feature path and the batch path, and pin the precision that survives:
+// a value the schema leaves alone must come back undegraded, which is what
+// keeps a scaled feature on the correct side of a tree split threshold.
+// -----------------------------------------------------------------------
+
+namespace {
+
+Tensor f64_source(int n_rows, int n_cols, const std::vector<double>& vals) {
+  Tensor t =
+      omle::rt::Tensor::dense(omle::rt::DataType::Float64, n_rows, n_cols);
+  double* p = t.f64_ptr();
+  for (int i = 0; i < n_rows * n_cols; ++i) p[i] = vals[i];
+  return t;
+}
+
+}  // namespace
+
+TEST_F(SchemaTest, Float64SourceIsNotReadAsFloat32) {
+  ModelSchemaNode node;
+  SchemaFeature f;
+  f.name = "x";
+  f.source = "X";
+  f.col = 0;
+  node.features.push_back(f);
+
+  ValueStore vs(cs);
+  vs.put("X", f64_source(2, 1, {1.0, 2.0}));
+  ASSERT_TRUE(node.execute(vs, 2).ok());
+
+  const Tensor& out = vs.get("x");
+  ASSERT_EQ(out.dtype, omle::rt::DataType::Float64);
+  EXPECT_DOUBLE_EQ(out.f64_at(0, 0), 1.0);
+  EXPECT_DOUBLE_EQ(out.f64_at(1, 0), 2.0);
+}
+
+TEST_F(SchemaTest, Float64KeepsPrecisionFloat32WouldLose) {
+  // 1.118033988749895 is sqrt(1.25) — a StandardScaler scale in the wild.
+  // float32 rounds it to 1.1180340051651001, and that ulp is enough to put a
+  // scaled value on the wrong side of a split threshold.
+  const double exact = 1.118033988749895;
+  ASSERT_NE(exact, static_cast<double>(static_cast<float>(exact)));
+
+  ModelSchemaNode node;
+  SchemaFeature f;
+  f.name = "x";
+  f.source = "X";
+  f.col = 0;
+  node.features.push_back(f);
+
+  ValueStore vs(cs);
+  vs.put("X", f64_source(1, 1, {exact}));
+  ASSERT_TRUE(node.execute(vs, 1).ok());
+
+  const Tensor& out = vs.get("x");
+  ASSERT_EQ(out.dtype, omle::rt::DataType::Float64);
+  EXPECT_DOUBLE_EQ(out.f64_at(0, 0), exact);
+}
+
+TEST_F(SchemaTest, Float64BatchPathKeepsPrecision) {
+  // batch_mode: every feature shares one source and sits in column order, so
+  // the node emits a single wide tensor instead of one per feature.
+  const double exact = 1.118033988749895;
+  ModelSchemaNode node;
+  for (int c = 0; c < 2; ++c) {
+    SchemaFeature f;
+    f.name = (c == 0) ? "a" : "b";
+    f.source = "X";
+    f.col = c;
+    node.features.push_back(f);
+  }
+  node.batch_mode = true;
+  node.batch_key = "X__batch__";
+
+  ValueStore vs(cs);
+  vs.put("X", f64_source(1, 2, {exact, 2.5}));
+  ASSERT_TRUE(node.execute(vs, 1).ok());
+
+  const Tensor& out = vs.get("X__batch__");
+  ASSERT_EQ(out.dtype, omle::rt::DataType::Float64);
+  EXPECT_DOUBLE_EQ(out.f64_at(0, 0), exact);
+  EXPECT_DOUBLE_EQ(out.f64_at(0, 1), 2.5);
+}
+
+TEST_F(SchemaTest, Float64StillAppliesMissingPolicy) {
+  // Precision preservation must not bypass the schema: a NaN still takes the
+  // missing branch, and the replacement wins over the original value.
+  ModelSchemaNode node;
+  SchemaFeature f;
+  f.name = "x";
+  f.source = "X";
+  f.col = 0;
+  f.missing_policy = MissingPolicy::AsValue;
+  f.missing_replacement = -1.f;
+  node.features.push_back(f);
+
+  ValueStore vs(cs);
+  vs.put("X",
+         f64_source(2, 1, {std::numeric_limits<double>::quiet_NaN(), 7.0}));
+  ASSERT_TRUE(node.execute(vs, 2).ok());
+
+  const Tensor& out = vs.get("x");
+  ASSERT_EQ(out.dtype, omle::rt::DataType::Float64);
+  EXPECT_DOUBLE_EQ(out.f64_at(0, 0), -1.0);
+  EXPECT_DOUBLE_EQ(out.f64_at(1, 0), 7.0);
+}

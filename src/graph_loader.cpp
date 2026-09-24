@@ -119,6 +119,9 @@ static void extract_floats(const P::Tensor& tensor, std::vector<float>& dst) {
   }
 }
 
+// Key suffix under which a FLOAT64 constant keeps its undegraded copy.
+static constexpr const char* kF64Suffix = "\001f64";
+
 static void extract_doubles(const P::Tensor& tensor, std::vector<double>& dst) {
   dst.clear();
   if (!tensor.raw_data().empty()) {
@@ -346,6 +349,19 @@ static void register_tensor_in_cstore(const P::Tensor& t,
         static_cast<int>(rows), static_cast<int>(cols), std::move(data)));
   }
   cstore[key] = rt;
+
+  // Narrowing every constant to float silently rewrites float64 parameters
+  // before any operator runs: a StandardScaler scale of 1.118033988749895
+  // becomes 1.1180340051651001, enough to put a scaled value one ulp off a
+  // tree split threshold and send the row down the wrong branch. Keep a
+  // full-precision twin for the operators that need it. The float32 entry
+  // above stays the default so every existing kernel is unaffected.
+  if (t.type().dtype() == P::FLOAT64) {
+    std::vector<double> d64;
+    extract_doubles(t, d64);
+    cstore[key + kF64Suffix] = std::make_shared<Tensor>(Tensor::from_doubles(
+        static_cast<int>(rows), static_cast<int>(cols), std::move(d64)));
+  }
 }
 
 static AttributeMap convert_attributes(
@@ -1659,7 +1675,15 @@ static void compile_feature(const P::Feature& pf,
 static std::unique_ptr<ModelSchemaNode> build_schema_node(
     const P::ModelSchema& ms) {
   auto node = std::make_unique<ModelSchemaNode>();
-  for (const auto& pf : ms.features()) compile_feature(pf, node->features);
+  // Named for diagnostics: this node is synthesised by the loader rather than
+  // read from the model, and an unnamed node is indistinguishable from a
+  // converter bug when it shows up in a trace or an error.
+  node->node_name = "model_schema";
+  bool any_string_feature = false;
+  for (const auto& pf : ms.features()) {
+    if (pf.type().dtype() == P::STRING) any_string_feature = true;
+    compile_feature(pf, node->features);
+  }
 
   // Enable batch mode when all features share the same source and are in
   // sequential column order. Then execute() emits one wide tensor instead
@@ -1675,7 +1699,11 @@ static std::unique_ptr<ModelSchemaNode> build_schema_node(
         break;
       }
     }
-    if (can_batch) {
+    // execute() only emits the wide batch tensor for numeric sources -- a
+    // string source falls through to the per-feature path. Claiming batch mode
+    // anyway made the loader rewire consumers to a batch_key that nothing ever
+    // produced, and the model failed to load with "graph value not found".
+    if (can_batch && !any_string_feature) {
       node->batch_mode = true;
       node->batch_key = src0 + "__batch__";
     }

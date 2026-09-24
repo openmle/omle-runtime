@@ -29,6 +29,17 @@ pipe = Pipeline([("scaler", StandardScaler()), ("model", model)])
 pipe.predict(X)
 ```
 
+Models can be saved with `pickle` or `joblib`. The saved object includes the
+`.omle` model bytes, so loading it does not require the original file. Loading
+recreates the native model with the original thread settings.
+
+```python
+import joblib
+
+joblib.dump(model, "model.joblib")
+model = joblib.load("model.joblib")
+```
+
 For repeated scoring on a thread, create a session once and reuse it:
 
 ```python

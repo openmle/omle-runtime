@@ -44,6 +44,7 @@ add_omle_test(test_expression_eval test_expression_eval.cpp)
 add_omle_test(test_operators          test_operators.cpp)
 add_omle_test(test_operators_extended test_operators_extended.cpp)
 add_omle_test(test_knn                test_knn.cpp)
+add_omle_test(test_operators_f64      test_operators_f64.cpp)
 add_omle_test(test_model_schema    test_model_schema.cpp)
 
 # These two build their fixture models with the generated protobuf classes, so

@@ -1,7 +1,7 @@
 # OMLE Runtime
 
 [![PyPI](https://img.shields.io/pypi/v/omle-runtime.svg)](https://pypi.org/project/omle-runtime/)
-[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-runtime.svg?label=maven-central%20%28java%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-runtime)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-runtime.svg?label=maven%20%28java%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-runtime)
 [![Tests](https://github.com/openmle/omle-runtime/actions/workflows/test.yml/badge.svg)](https://github.com/openmle/omle-runtime/actions/workflows/test.yml)
 
 High-performance C++ inference engine for classical machine learning models serialized in OMLE format. Supports batch prediction with multi-threaded execution, bindings for Python/NumPy and Java, and a stable C ABI for FFI integration. The Scala/Spark and PySpark bindings build on it from [omle-spark](https://github.com/openmle/omle-spark).

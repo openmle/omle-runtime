@@ -41,14 +41,17 @@ class UserFunctionContext {
 // Expression and predicate evaluation
 // -----------------------------------------------------------------------
 
-// Evaluate an expression over all N rows.  Returns a [N]-length float column.
-omle::rt::StatusOr<std::vector<float>> eval_expr(const Expr& expr,
-                                                 const ValueStore& vs,
-                                                 int n_rows);
+// Evaluate an expression over all N rows.  Returns a [N]-length double
+// column. The DSL evaluates in double whatever the column's storage width:
+// its 61 primitives compose, so a float32 rounding at every step compounds
+// through the expression rather than happening once at the end.
+omle::rt::StatusOr<std::vector<double>> eval_expr(const Expr& expr,
+                                                  const ValueStore& vs,
+                                                  int n_rows);
 
-inline omle::rt::StatusOr<std::vector<float>> eval_expr(const ExprPtr& ep,
-                                                        const ValueStore& vs,
-                                                        int n_rows) {
+inline omle::rt::StatusOr<std::vector<double>> eval_expr(const ExprPtr& ep,
+                                                         const ValueStore& vs,
+                                                         int n_rows) {
   return eval_expr(*ep, vs, n_rows);
 }
 

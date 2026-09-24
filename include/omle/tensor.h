@@ -450,8 +450,23 @@ struct Tensor {
 
   // Assign float32 content from a vector<float> — zero-copy adoption.
   void set_floats(std::vector<float> v) {
+    dtype = DataType::Float32;
     if (kind == Kind::Scalar && v.size() == 1) {
       std::memcpy(scalar_buf_, &v[0], sizeof(float));
+      return;
+    }
+    kind = Kind::Dense;
+    data = DenseStore::adopt(std::move(v));
+  }
+
+  // Assign float64 content from a vector<double> — zero-copy adoption.
+  // Retypes the tensor: callers build a [n × 1] with the float32 constructor
+  // and then fill it from a double column, so leaving dtype alone would label
+  // double storage Float32 and every later read would reinterpret it.
+  void set_doubles(std::vector<double> v) {
+    dtype = DataType::Float64;
+    if (kind == Kind::Scalar && v.size() == 1) {
+      std::memcpy(scalar_buf_, &v[0], sizeof(double));
       return;
     }
     kind = Kind::Dense;

@@ -11,6 +11,7 @@
 
 #include "../post_transform.h"
 #include "../simd_traits.h"
+#include "../width_dispatch.h"
 
 namespace omle::rt::impl {
 
@@ -314,10 +315,11 @@ omle::rt::Status ClusteringNode::execute(ValueStore& vs, int n_rows) const {
   Tensor dist_scores =
       omle::rt::Tensor::dense(omle::rt::DataType::Float32, n_rows, nc);
 
-  impl_->compute(dt == omle::rt::DataType::Float64
-                     ? (const void*)features.f64_ptr()
-                     : (const void*)features.f32_ptr(),
-                 n_rows, pred_f32.f32_ptr(), dist_scores.f32_ptr());
+  with_width(dt == omle::rt::DataType::Float64, [&](auto tag) {
+    using T = decltype(tag);
+    impl_->compute((const void*)data_w<T>(features), n_rows, pred_f32.f32_ptr(),
+                   dist_scores.f32_ptr());
+  });
 
   if (!out_names.empty()) {
     Tensor pred = Tensor::dense(omle::rt::DataType::Int32, n_rows, 1);

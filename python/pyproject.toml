@@ -10,7 +10,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "omle-runtime"
 dynamic = ["version"]
-description = "OMLE inference runtime — fast classical ML inference"
+description = "Fast classical ML inference runtime for OMLE models"
 requires-python = ">=3.10"
 dependencies = ["numpy"]
 readme = "README.md"

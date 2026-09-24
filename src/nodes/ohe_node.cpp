@@ -1,5 +1,6 @@
 #include "ohe_node.h"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -21,13 +22,29 @@ omle::rt::Status OHENode::execute(ValueStore& vs, int n_rows) const {
     std::memset(tl_scratch.data(), 0,
                 static_cast<std::size_t>(needed) * sizeof(float));
 
-  const bool is_str = per_col ? vs.get(in_names[0]).is_string()
-                              : vs.get(in_names[0]).is_string();
+  // Wide mode holds every column in one tensor, so a single dtype governs all
+  // of them. Per-column mode holds one tensor per feature and they need not
+  // agree: a ColumnTransformer can one-hot a string column and an integer
+  // column in the same node. Deciding once from in_names[0] and applying that
+  // verdict to every feature called str_at() on numeric tensors, dereferencing
+  // string storage that is not there. Resolve per feature, once, outside the
+  // row loop.
+  std::vector<char> feat_is_str(nf, 0);
+  if (per_col) {
+    for (int f = 0; f < nf; ++f) {
+      if (f < static_cast<int>(in_names.size()))
+        feat_is_str[f] = vs.get(in_names[f]).is_string() ? 1 : 0;
+    }
+  } else {
+    const char wide = vs.get(in_names[0]).is_string() ? 1 : 0;
+    std::fill(feat_is_str.begin(), feat_is_str.end(), wide);
+  }
 
   for (int r = 0; r < n_rows; ++r) {
     int out_off = 0;
     for (int f = 0; f < nf; ++f) {
-      if (is_str) {
+      if (per_col && f >= static_cast<int>(in_names.size())) break;
+      if (feat_is_str[f]) {
         const std::string& x = per_col ? vs.get(in_names[f]).str_at(r, 0)
                                        : vs.get(in_names[0]).str_at(r, f);
         auto it = cat_maps[f].find(x);

@@ -352,11 +352,19 @@ void omle_free_tensors(omle_tensor_t** tensors, int count);
 
 // Column type constants for omle_model_predict_columns /
 // omle_session_run_columns.
+//
+// FLOAT64 keeps the caller's precision through preprocessing: narrowing at
+// ingest and scaling afterwards is not the same as scaling first and narrowing
+// once, and the difference is enough to move a value across a tree split
+// threshold. It is also how integer columns are passed, since float32 carries
+// only 24 bits of mantissa and silently alters values above 2**24.
 #define OMLE_COL_FLOAT32 0
-#define OMLE_COL_STRING 1
+#define OMLE_COL_FLOAT64 1
+#define OMLE_COL_STRING 2
 
 // Stateless prediction from column arrays.
 // col_data[c]: for FLOAT32 columns, points to float[n_rows];
+//              for FLOAT64 columns, points to double[n_rows];
 //              for STRING columns,  points to const char*[n_rows].
 // All column data is read but not retained after the call returns.
 // Output handling is identical to omle_model_predict().

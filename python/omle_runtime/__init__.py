@@ -221,16 +221,45 @@ def _prepare_col_data(df, col_str_mask=None):
             # to_numpy(dtype=object), not .values: pandas 3.0 stores strings in
             # an Arrow-backed StringDtype whose .values is an ArrowStringArray,
             # not the numpy object array the C++ side reads PyObject* out of.
-            col_data.append(s.to_numpy(dtype=object))
+            arr = s.to_numpy(dtype=object)
+            # Missing values arrive as a float nan, which the C++ reader hands
+            # to PyUnicode_AsUTF8 and fails on with a bare TypeError. Converters
+            # stringify categories with str(), so a NaN category is stored in
+            # the model as "nan" -- spell it the same way here so the lookup
+            # matches instead of crashing.
+            if s.isna().any():
+                arr = np.where(pd.isna(arr), "nan", arr)
+            col_data.append(arr)
         else:
-            col_data.append(np.ascontiguousarray(s.values, dtype=np.float32))
+            # Keep float64 columns at full width. Narrowing here and scaling
+            # afterwards is not the same as scaling in float64 and narrowing
+            # once, and the ulp of difference is enough to move a value across
+            # a tree split threshold. Anything else still goes over as float32.
+            vals = s.to_numpy()
+            # Integers go over as float64 too. float32 carries only 24 bits of
+            # mantissa, so an int64 column silently loses values above 2**24 --
+            # 16777217 arrives as 16777216. float64 is exact to 2**53, which
+            # covers ids, counts and epoch-second timestamps. Beyond that a
+            # true integer column type would be needed.
+            dt = (np.float64
+                  if vals.dtype == np.float64 or vals.dtype.kind in "iu"
+                  else np.float32)
+            col_data.append(np.ascontiguousarray(vals, dtype=dt))
     return col_names, col_data
 
 
 def _session_run_array(session_ptr: int, arr: np.ndarray,
                        output_specs: List[OutputSpec], input_name: str) -> np.ndarray:
-    """Session run with a single float32 numpy input array."""
-    t_ptr = _ext.tensor_create_f32(arr.shape[0], arr.shape[1], arr)
+    """Session run with a single dense numpy input array.
+
+    Binds float64 input as float64. Forcing float32 here would make a Session
+    score differently from Model.predict on the same array, since that path
+    now carries the caller's width through.
+    """
+    if arr.dtype == np.float64:
+        t_ptr = _ext.tensor_create_f64(arr.shape[0], arr.shape[1], arr)
+    else:
+        t_ptr = _ext.tensor_create_f32(arr.shape[0], arr.shape[1], arr)
     try:
         _ext.session_clear_inputs(session_ptr)
         _ext.session_bind_input(session_ptr, input_name, t_ptr)
@@ -250,14 +279,21 @@ def _coerce(
     X,
     expected_features: int = 0,
 ) -> np.ndarray:
-    """Return X as a float32 C-contiguous 2-D array, validating feature count.
+    """Return X as a C-contiguous 2-D float array, validating feature count.
 
     Accepts numpy arrays, pandas DataFrames (numeric), scipy sparse matrices,
     Python list / nested list, or :class:`Tensor`.
     A 1-D input is treated as a single sample ``(1, n_features)``.
+
+    float64 input stays float64; everything else becomes float32. The dense
+    entry path used to narrow unconditionally, which meant an all-numeric
+    DataFrame lost precision before the first operator ran -- the columns
+    path (taken only when some column is a string) already kept full width,
+    so the same model scored differently depending on whether it happened to
+    have a string feature.
     """
     # Fast path: already the right format — avoid all numpy overhead
-    if (isinstance(X, np.ndarray) and X.dtype == np.float32
+    if (isinstance(X, np.ndarray) and X.dtype in (np.float32, np.float64)
             and X.ndim == 2 and X.flags['C_CONTIGUOUS']):
         if expected_features > 0 and X.shape[1] != expected_features:
             raise ValueError(
@@ -282,7 +318,14 @@ def _coerce(
                 X = X.values
         except ImportError:
             pass
-        arr = np.asarray(X, dtype=np.float32)
+        arr = np.asarray(X)
+        # Integers go over as float64 for the same reason _prepare_col_data
+        # sends them that way: float32 carries 24 bits of mantissa, so an id
+        # or count above 2**24 would arrive as a different number.
+        want = (np.float64
+                if arr.dtype == np.float64 or arr.dtype.kind in "iu"
+                else np.float32)
+        arr = np.asarray(arr, dtype=want)
 
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
@@ -294,7 +337,8 @@ def _coerce(
             f"X has {arr.shape[1]} feature(s) but model expects {expected_features}."
         )
 
-    return np.ascontiguousarray(arr, dtype=np.float32)
+    dt = np.float64 if arr.dtype == np.float64 else np.float32
+    return np.ascontiguousarray(arr, dtype=dt)
 
 
 def _maybe_squeeze(arr: np.ndarray, squeeze: bool, n_outputs: int) -> np.ndarray:
@@ -365,6 +409,11 @@ class Tensor:
 # Model
 # ---------------------------------------------------------------------------
 
+def _restore_model(data: bytes, n_threads: int, min_parallel_rows: int) -> "Model":
+    return Model.load_bytes(data, n_threads=n_threads,
+                            min_parallel_rows=min_parallel_rows)
+
+
 class Model:
     """Immutable model handle — thread-safe.
 
@@ -376,6 +425,9 @@ class Model:
         self._ptr     = ptr
         self._inputs  = inputs
         self._outputs = outputs
+        self._model_bytes = None
+        self._n_threads = 1
+        self._min_parallel_rows = 64
 
     @classmethod
     def _from_ptr(cls, ptr: int) -> "Model":
@@ -400,14 +452,24 @@ class Model:
     @classmethod
     def load(cls, path: str, *, n_threads: int = 1, min_parallel_rows: int = 64) -> "Model":
         """Load from a protobuf binary file."""
-        ptr = _ext.model_load_file(str(path), n_threads, min_parallel_rows)
-        return cls._from_ptr(ptr)
+        with open(path, "rb") as file:
+            return cls.load_bytes(file.read(), n_threads=n_threads,
+                                  min_parallel_rows=min_parallel_rows)
 
     @classmethod
     def load_bytes(cls, data: bytes, *, n_threads: int = 1, min_parallel_rows: int = 64) -> "Model":
         """Load from a bytes object (e.g. from a database or object store)."""
         ptr = _ext.model_load_memory(data, n_threads, min_parallel_rows)
-        return cls._from_ptr(ptr)
+        model = cls._from_ptr(ptr)
+        model._model_bytes = data
+        model._n_threads = n_threads
+        model._min_parallel_rows = min_parallel_rows
+        return model
+
+    def __reduce__(self):
+        """Rebuild the native handle from the embedded model on unpickle."""
+        return (_restore_model, (self._model_bytes, self._n_threads,
+                                 self._min_parallel_rows))
 
     def __del__(self) -> None:
         if getattr(self, "_ptr", None):
@@ -870,6 +932,3 @@ __all__ = [
     "load",
     "load_bytes",
 ]
-
-# Alias so the class can be discovered as a scikit-learn-style estimator.
-OMLEModel = Model

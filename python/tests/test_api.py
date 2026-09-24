@@ -5,6 +5,7 @@ Run with:
     cd python && python3 -m pytest tests/ -v
 """
 
+import pickle
 import sys
 from pathlib import Path
 
@@ -86,6 +87,26 @@ class TestTensor:
 
 
 class TestLoad:
+    @pytest.mark.parametrize("from_file", [False, True])
+    def test_pickle_roundtrip(self, model_bytes_2f, tmp_path, from_file):
+        path = tmp_path / "model.omle"
+        path.write_bytes(model_bytes_2f)
+        model = omr.load(path, n_threads=2, min_parallel_rows=8) if from_file else (
+            load_bytes(model_bytes_2f, n_threads=2, min_parallel_rows=8)
+        )
+        restored = pickle.loads(pickle.dumps(model))
+        assert restored._ptr != model._ptr
+        assert (restored._n_threads, restored._min_parallel_rows) == (2, 8)
+        np.testing.assert_allclose(restored.predict([[0.0, 1.0]]), model.predict([[0.0, 1.0]]))
+
+    def test_joblib_roundtrip(self, model_bytes_2f, tmp_path):
+        joblib = pytest.importorskip("joblib")
+        model = load_bytes(model_bytes_2f)
+        path = tmp_path / "model.joblib"
+        joblib.dump(model, path)
+        restored = joblib.load(path)
+        np.testing.assert_allclose(restored.predict([[1.0, 1.0]]), model.predict([[1.0, 1.0]]))
+
     def test_load_bytes_returns_model(self, model_bytes_2f):
         m = load_bytes(model_bytes_2f)
         assert isinstance(m, Model)

@@ -15,6 +15,7 @@
 #include "../post_transform.h"
 #include "../simd_traits.h"
 #include "../thread_pool.h"
+#include "../width_dispatch.h"
 #include "omle/port.h"
 
 namespace omle::rt::impl {
@@ -1690,15 +1691,13 @@ omle::rt::Status TreeEnsembleNode::execute(ValueStore& vs, int n_rows) const {
   const int nf = features.n_cols;
   const int no = impl_->n_outputs();
 
+  const bool f64 = (dt == omle::rt::DataType::Float64);
   omle::rt::Tensor scores = omle::rt::Tensor::dense(dt, n_rows, no);
-  impl_->compute(dt == omle::rt::DataType::Float64
-                     ? static_cast<const void*>(features.f64_ptr())
-                     : static_cast<const void*>(features.f32_ptr()),
-                 nf, n_rows,
-                 dt == omle::rt::DataType::Float64
-                     ? static_cast<void*>(scores.f64_ptr())
-                     : static_cast<void*>(scores.f32_ptr()),
-                 &vs);
+  with_width(f64, [&](auto tag) {
+    using T = decltype(tag);
+    impl_->compute(static_cast<const void*>(data_w<T>(features)), nf, n_rows,
+                   static_cast<void*>(data_w<T>(scores)), &vs);
+  });
 
   // Classification: two output names means [y_pred, y_prob].
   // scores contains probability values (post-transform already applied).
@@ -1708,55 +1707,35 @@ omle::rt::Status TreeEnsembleNode::execute(ValueStore& vs, int n_rows) const {
         omle::rt::Tensor::dense(omle::rt::DataType::Int64, n_rows, 1);
     int64_t* pred_ptr = pred.i64_ptr();
 
-    if (dt == omle::rt::DataType::Float64) {
-      const double* sp = scores.f64_ptr();
+    with_width(f64, [&](auto tag) {
+      using T = decltype(tag);
+      const T* sp = data_w<T>(scores);
       if (no == 1) {
         // Binary: expand (n,1) → (n,2): [1-p, p], threshold 0.5
         omle::rt::Tensor prob2 = omle::rt::Tensor::dense(dt, n_rows, 2);
-        double* dp = prob2.f64_ptr();
+        T* dp = data_w<T>(prob2);
         for (int r = 0; r < n_rows; ++r) {
-          dp[r * 2] = 1.0 - sp[r];
+          dp[r * 2] = T(1) - sp[r];
           dp[r * 2 + 1] = sp[r];
-          pred_ptr[r] = sp[r] >= 0.5 ? 1 : 0;
+          pred_ptr[r] = sp[r] >= T(0.5) ? 1 : 0;
         }
         vs.put(out_names[1], std::move(prob2));
       } else {
         omle::rt::Tensor prob = scores;
         for (int r = 0; r < n_rows; ++r) {
-          const double* row = sp + r * no;
+          const T* row = sp + r * no;
           pred_ptr[r] = static_cast<int64_t>(
               std::distance(row, std::max_element(row, row + no)));
         }
         vs.put(out_names[1], std::move(prob));
       }
-    } else {
-      const float* sp = scores.f32_ptr();
-      if (no == 1) {
-        // Binary: expand (n,1) → (n,2): [1-p, p], threshold 0.5
-        omle::rt::Tensor prob2 = omle::rt::Tensor::dense(dt, n_rows, 2);
-        float* dp = prob2.f32_ptr();
-        for (int r = 0; r < n_rows; ++r) {
-          dp[r * 2] = 1.f - sp[r];
-          dp[r * 2 + 1] = sp[r];
-          pred_ptr[r] = sp[r] >= 0.5f ? 1 : 0;
-        }
-        vs.put(out_names[1], std::move(prob2));
-      } else {
-        omle::rt::Tensor prob = scores;
-        for (int r = 0; r < n_rows; ++r) {
-          const float* row = sp + r * no;
-          pred_ptr[r] = static_cast<int64_t>(
-              std::distance(row, std::max_element(row, row + no)));
-        }
-        vs.put(out_names[1], std::move(prob));
-      }
-    }
+    });
     vs.put(out_names[0], std::move(pred));
   } else {
-    if (dt == omle::rt::DataType::Float64)
-      scatter_outputs(vs, out_names, scores.f64_ptr(), n_rows, no);
-    else
-      scatter_outputs(vs, out_names, scores.f32_ptr(), n_rows, no);
+    with_width(f64, [&](auto tag) {
+      using T = decltype(tag);
+      scatter_outputs(vs, out_names, data_w<T>(scores), n_rows, no);
+    });
   }
   return {};
 }
