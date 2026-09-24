@@ -149,6 +149,22 @@ public final class Model implements AutoCloseable {
      * @param nRows    number of rows
      * @return flat row-major output, length = nRows * numOutputs
      */
+    /**
+     * Column type codes for {@link #predictColumns}.
+     *
+     * <p>These mirror the {@code OMLE_COL_*} constants in {@code c_api.h} and
+     * are exposed here so callers need not reach into the internal package —
+     * or, worse, hard-code the numbers. {@code COL_STRING} was 1 until FLOAT64
+     * support was added, which took that value and moved STRING to 2. Nothing
+     * validates a stale code: a string column sent as 1 has its {@code char*}
+     * array read as {@code double*}, so every row decodes to category index 0
+     * and the model predicts as though each row held the first category, with
+     * no error raised.
+     */
+    public static final int COL_FLOAT32 = Lib.COL_FLOAT32;
+    public static final int COL_FLOAT64 = Lib.COL_FLOAT64;
+    public static final int COL_STRING  = Lib.COL_STRING;
+
     public float[] predictColumns(String[] colNames, int[] colTypes, Object[] cols, int nRows) {
         int n = colNames.length;
         Pointer[]     colData = new Pointer[n];
@@ -161,10 +177,27 @@ public final class Model implements AutoCloseable {
                 m.write(0, fa, 0, nRows);
                 mems[i]    = m;
                 colData[i] = m;
-            } else {
+            } else if (colTypes[i] == Lib.COL_FLOAT64) {
+                double[] da = (double[]) cols[i];
+                Memory m = new Memory((long) nRows * Double.BYTES);
+                m.write(0, da, 0, nRows);
+                mems[i]    = m;
+                colData[i] = m;
+            } else if (colTypes[i] == Lib.COL_STRING) {
                 StringArray sa = new StringArray((String[]) cols[i]);
                 sas[i]     = sa;
                 colData[i] = sa;
+            } else {
+                // Not an else-fallthrough any more. While COL_STRING was the
+                // only non-float type, "anything else is a string" was safe;
+                // adding COL_FLOAT64 made that assumption silently wrong for
+                // a caller still using the old numbering, so an unknown code
+                // now says so instead of casting a double[] to String[].
+                throw new IllegalArgumentException(
+                    "unknown column type " + colTypes[i] + " for column '"
+                    + colNames[i] + "'; expected COL_FLOAT32 ("
+                    + Lib.COL_FLOAT32 + "), COL_FLOAT64 (" + Lib.COL_FLOAT64
+                    + ") or COL_STRING (" + Lib.COL_STRING + ")");
             }
         }
 

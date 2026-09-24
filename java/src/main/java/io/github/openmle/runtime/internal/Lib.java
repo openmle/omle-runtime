@@ -109,13 +109,24 @@ public interface Lib extends Library {
     // ---------------------------------------------------------------------------
     // Bulk column prediction (supports STRING and float columns)
     //
-    // col_types[c]: COL_FLOAT32 (0) or COL_STRING (1).
+    // col_types[c]: COL_FLOAT32 (0), COL_FLOAT64 (1) or COL_STRING (2).
     // col_data[c]:  for FLOAT32, pointer to float[n_rows];
+    //               for FLOAT64, pointer to double[n_rows];
     //               for STRING,  pointer to const char*[n_rows].
+    //
+    // These mirror OMLE_COL_* in include/omle/c_api.h and must be kept in step
+    // with it. COL_STRING was 1 until FLOAT64 support was added, which took
+    // that value and pushed STRING to 2. Nothing detects a mismatch: a caller
+    // still sending 1 for a string column has its char* array read as
+    // double*, so the tensor fills with garbage, a LabelEncoder over it
+    // returns index 0 for every row, and the model silently predicts as
+    // though every row held the first category. Pass these constants rather
+    // than integer literals.
     // ---------------------------------------------------------------------------
 
     int COL_FLOAT32 = 0;
-    int COL_STRING  = 1;
+    int COL_FLOAT64 = 1;
+    int COL_STRING  = 2;
 
     int omle_model_predict_columns(
         Pointer model,
