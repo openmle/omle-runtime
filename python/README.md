@@ -1,4 +1,8 @@
-# omle-runtime
+# OMLE Runtime
+
+[![PyPI](https://img.shields.io/pypi/v/omle-runtime.svg)](https://pypi.org/project/omle-runtime/)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.openmle/omle-runtime.svg?label=maven%20%28java%29)](https://central.sonatype.com/artifact/io.github.openmle/omle-runtime)
+[![Tests](https://github.com/openmle/omle-runtime/actions/workflows/test.yml/badge.svg)](https://github.com/openmle/omle-runtime/actions/workflows/test.yml)
 
 Fast inference for classical ML models, with a scikit-learn-style API.
 
