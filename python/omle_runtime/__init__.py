@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Dict, List, Union
@@ -472,6 +473,15 @@ class Model:
         model._model_bytes = data
         model._n_threads = n_threads
         model._min_parallel_rows = min_parallel_rows
+
+        # Advisories the loader collected rather than printed — a schema version
+        # this build does not recognise on a model with no verification cases to
+        # settle it, for instance. Raised through the warnings module so they can
+        # be filtered, captured in tests, or escalated with -W error, none of
+        # which is possible for a library that writes to stderr.
+        for message in _ext.model_warnings(ptr):
+            warnings.warn(f"omle-runtime: {message}", RuntimeWarning,
+                          stacklevel=3)
         return model
 
     def __reduce__(self):

@@ -105,6 +105,13 @@ class Model {
 
   const std::vector<InputSpec>& inputs() const;
   const std::vector<OutputSpec>& outputs() const;
+
+  // Non-fatal advisories raised while loading this model — currently a schema
+  // version this build does not recognise on a model carrying no verification
+  // cases to prove otherwise. Empty for the ordinary case. Returned rather than
+  // printed so an embedder can route them; the Python bindings turn each into a
+  // warnings.warn().
+  const std::vector<std::string>& warnings() const;
   int num_inputs() const;
   int num_outputs() const;
 

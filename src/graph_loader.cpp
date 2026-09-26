@@ -1895,11 +1895,16 @@ static std::unordered_map<std::string, Tensor> resolve_refs(
   return result;
 }
 
-static void run_verification(const P::OMLEModel& proto,
+// Returns true when at least one verification case ran and every compared
+// output matched. That return value is load-bearing: a model that reproduces
+// its producer's recorded outputs has demonstrated this build executes it
+// correctly, which is better evidence than any version string, so the caller
+// uses it to decide whether a schema-version mismatch is worth mentioning.
+static bool run_verification(const P::OMLEModel& proto,
                              const TensorEntryMap& entries, ModelBase& exec) {
-  if (!proto.has_verification()) return;
+  if (!proto.has_verification()) return false;
   const auto& verif = proto.verification();
-  if (verif.cases_size() == 0) return;
+  if (verif.cases_size() == 0) return false;
 
   double atol = 1e-6, rtol = 1e-5;
   if (verif.has_tolerance()) {
@@ -1951,6 +1956,7 @@ static void run_verification(const P::OMLEModel& proto,
       }
     }
   }
+  return true;
 }
 
 static void run_warmup(const P::OMLEModel& proto, const TensorEntryMap& entries,
@@ -2200,6 +2206,62 @@ LoadedModel build_from_proto(const P::OMLEModel& proto) {
   return result;
 }
 
+// ── Schema version ─────────────────────────────────────────────────────────
+//
+// The OMLE schema version this build reads. Must stay in step with
+// FORMAT_VERSION in the omle package (omle/src/omle/_format.py); the guard test
+// in that repository is what keeps the two honest.
+//
+// omle.proto states the contract: a consumer must reject a MAJOR it does not
+// support. Before 1.0 that is tightened to an exact MINOR match, because the
+// schema says plainly that 0.x MINOR bumps may still break compatibility —
+// accepting 0.2 on the strength of a promise 0.x does not make is how a runtime
+// silently mis-reads a model instead of refusing it.
+constexpr int kFormatMajor = 0;
+constexpr int kFormatMinor = 1;
+
+// Strict MAJOR[.MINOR[.PATCH]] parse. Returns false on anything else, so a
+// malformed version is refused rather than coerced to 0.0.0.
+static bool parse_format_version(const std::string& v, int out[3]) {
+  out[0] = out[1] = out[2] = 0;
+  int part = 0;
+  bool digits_in_part = false;
+  for (const char c : v) {
+    if (c == '.') {
+      if (!digits_in_part || part == 2) return false;
+      ++part;
+      digits_in_part = false;
+      continue;
+    }
+    if (c < '0' || c > '9') return false;
+    out[part] = out[part] * 10 + (c - '0');
+    digits_in_part = true;
+  }
+  return digits_in_part;
+}
+
+enum class FormatStatus { Absent, Supported, Unsupported, Malformed };
+
+static std::string supported_format_string() {
+  return std::to_string(kFormatMajor) + "." + std::to_string(kFormatMinor) +
+         ".x";
+}
+
+static FormatStatus format_status(const P::OMLEModel& proto,
+                                  std::string* declared) {
+  declared->clear();
+  if (!proto.has_metadata()) return FormatStatus::Absent;
+  const std::string& v = proto.metadata().format_version();
+  if (v.empty()) return FormatStatus::Absent;
+  *declared = v;
+
+  int n[3];
+  if (!parse_format_version(v, n)) return FormatStatus::Malformed;
+  const bool ok =
+      n[0] == kFormatMajor && (kFormatMajor != 0 || n[1] == kFormatMinor);
+  return ok ? FormatStatus::Supported : FormatStatus::Unsupported;
+}
+
 }  // anonymous namespace
 
 LoadedModel build_graph_executor(const void* data, std::size_t size,
@@ -2207,6 +2269,11 @@ LoadedModel build_graph_executor(const void* data, std::size_t size,
   P::OMLEModel proto;
   if (!proto.ParseFromArray(data, static_cast<int>(size)))
     throw std::runtime_error("omle: failed to parse protobuf model");
+
+  // The schema version is only consulted if verification cannot settle the
+  // question; see the decision below.
+  std::string declared_version;
+  const FormatStatus fstatus = format_status(proto, &declared_version);
 
   LoadedModel result = build_from_proto(proto);
 
@@ -2225,8 +2292,54 @@ LoadedModel build_graph_executor(const void* data, std::size_t size,
   }
 
   TensorEntryMap tensor_map = build_tensor_entry_map(proto);
-  if (opts.run_verification)
-    run_verification(proto, tensor_map, *result.executor);
+
+  // Evidence before declaration.
+  //
+  // A model carrying verification cases states what its producer computed for
+  // recorded inputs. Reproducing those outputs is a demonstration that this
+  // build executes this model correctly — strictly stronger than comparing a
+  // version string, which only says which schema the producer targeted. So a
+  // model that verifies loads silently, whatever version it declares.
+  //
+  // Without that evidence there is nothing to fall back on but the version, and
+  // a mismatch becomes an advisory rather than a refusal: protobuf drops
+  // unknown fields silently, so a newer schema can change what an existing node
+  // means and the only symptom is different numbers. The caller is told; it is
+  // not stopped.
+  bool verified = false;
+  if (opts.run_verification) {
+    try {
+      verified = run_verification(proto, tensor_map, *result.executor);
+    } catch (const std::exception& e) {
+      // A mismatch here, on a model from an unsupported schema, is very likely
+      // that schema difference rather than a corrupt file. Say so: it is the
+      // difference between a five-minute fix and an afternoon.
+      if (fstatus == FormatStatus::Unsupported ||
+          fstatus == FormatStatus::Malformed)
+        throw std::runtime_error(
+            std::string(e.what()) + " — the model declares schema version " +
+            declared_version + " and this runtime reads " +
+            supported_format_string() +
+            ", which is the likely cause; re-export the model or upgrade "
+            "omle-runtime");
+      throw;
+    }
+  }
+
+  if (!verified) {
+    if (fstatus == FormatStatus::Unsupported)
+      result.warnings.push_back(
+          "model declares schema version " + declared_version +
+          " and this runtime reads " + supported_format_string() +
+          "; it carries no verification cases that would confirm this build "
+          "executes it correctly, so results may differ from the producer's");
+    else if (fstatus == FormatStatus::Malformed)
+      result.warnings.push_back(
+          "model declares schema version '" + declared_version +
+          "', which is not a MAJOR.MINOR.PATCH version, and carries no "
+          "verification cases; results may differ from the producer's");
+  }
+
   if (opts.run_warmup) run_warmup(proto, tensor_map, *result.executor);
 
   return result;

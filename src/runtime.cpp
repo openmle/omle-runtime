@@ -14,6 +14,7 @@ struct Model::Impl {
   std::vector<OutputSpec> outputs;
   int cached_num_inputs{0};
   int cached_num_outputs{0};
+  std::vector<std::string> warnings;
 };
 
 struct Session::Impl {
@@ -83,6 +84,7 @@ StatusOr<std::unique_ptr<Model>> Model::load(const std::string& path,
         std::shared_ptr<impl::ModelBase>(std::move(loaded.executor));
     m->impl_->inputs = std::move(loaded.inputs);
     m->impl_->outputs = std::move(loaded.outputs);
+    m->impl_->warnings = std::move(loaded.warnings);
     m->impl_->cached_num_inputs =
         compute_num_inputs(m->impl_->executor, m->impl_->inputs);
     m->impl_->cached_num_outputs =
@@ -102,6 +104,7 @@ StatusOr<std::unique_ptr<Model>> Model::load(const void* data, std::size_t size,
         std::shared_ptr<impl::ModelBase>(std::move(loaded.executor));
     m->impl_->inputs = std::move(loaded.inputs);
     m->impl_->outputs = std::move(loaded.outputs);
+    m->impl_->warnings = std::move(loaded.warnings);
     m->impl_->cached_num_inputs =
         compute_num_inputs(m->impl_->executor, m->impl_->inputs);
     m->impl_->cached_num_outputs =
@@ -114,6 +117,10 @@ StatusOr<std::unique_ptr<Model>> Model::load(const void* data, std::size_t size,
 
 const std::vector<InputSpec>& Model::inputs() const { return impl_->inputs; }
 const std::vector<OutputSpec>& Model::outputs() const { return impl_->outputs; }
+
+const std::vector<std::string>& Model::warnings() const {
+  return impl_->warnings;
+}
 
 int Model::num_inputs() const { return impl_->cached_num_inputs; }
 int Model::num_outputs() const { return impl_->cached_num_outputs; }

@@ -172,6 +172,19 @@ PYBIND11_MODULE(omle_ext, m) {
     return omle_model_num_inputs(reinterpret_cast<const omle_model_t*>(ptr));
   });
 
+  // Non-fatal advisories from load. Surfaced as warnings.warn() by Model.load,
+  // so a caller can filter or escalate them with the ordinary -W machinery
+  // rather than scraping stderr.
+  m.def("model_warnings", [](uintptr_t ptr) -> std::vector<std::string> {
+    const auto* model = reinterpret_cast<const omle_model_t*>(ptr);
+    std::vector<std::string> out;
+    const int n = omle_model_num_warnings(model);
+    out.reserve(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i)
+      if (const char* w = omle_model_warning(model, i)) out.emplace_back(w);
+    return out;
+  });
+
   m.def("model_num_outputs", [](uintptr_t ptr) {
     return omle_model_num_outputs(reinterpret_cast<const omle_model_t*>(ptr));
   });

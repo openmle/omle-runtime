@@ -176,6 +176,13 @@ void omle_free_model(omle_model_t* model);
 // ---------------------------------------------------------------------------
 
 int omle_model_num_inputs(const omle_model_t* model);
+
+/* Non-fatal advisories raised while loading, e.g. a schema version this build
+ * does not recognise on a model carrying no verification cases to prove it runs
+ * correctly. Usually zero. The returned pointer is owned by the model and valid
+ * for its lifetime; NULL for an out-of-range index. */
+int omle_model_num_warnings(const omle_model_t* model);
+const char* omle_model_warning(const omle_model_t* model, int index);
 int omle_model_num_outputs(const omle_model_t* model);
 
 // Returns OMLE_OK and fills *spec, or OMLE_ERR_INVALID_ARGUMENT if idx

@@ -760,3 +760,145 @@ TEST(Float64Fidelity, VerificationInputKeepsFloat64) {
   ASSERT_TRUE(res.ok()) << res.status().message();
   EXPECT_NEAR(res.value().begin()->second.get(0, 0), kExpected, tol);
 }
+
+// ---- Schema version: evidence before declaration ------------------------
+//
+// omle.proto tells consumers to reject a MAJOR they do not support, and warns
+// that 0.x MINOR bumps may break compatibility. Taken literally that refuses
+// models this build can demonstrably execute, so the version is consulted only
+// when nothing better is available:
+//
+//   verification present and passing  → load silently, whatever it declares.
+//       Reproducing the producer's recorded outputs is a demonstration that
+//       this build runs this model correctly. A version string only says which
+//       schema the producer targeted.
+//
+//   verification absent               → the version is all there is. A mismatch
+//       becomes a warning on the model, not a refusal: protobuf drops unknown
+//       fields silently, so a newer schema can change what an existing node
+//       means, and the only symptom would be different numbers.
+//
+//   verification present and failing  → the existing error, with the version
+//       named when it is the likely cause.
+namespace {
+
+// A stump that scores f0=1.0 to the right leaf, -1.0.
+void add_version_stump(P::OMLEModel& proto) {
+  proto.add_inputs()->set_name("f0");
+  proto.add_outputs()->set_name("score");
+  add_te_node(proto, {"f0"}, "score", {{0, 0.5f, 1.0f, -1.0f}});
+}
+
+// Records f0=1.0 → score=expected as a verification case.
+void add_version_verification(P::OMLEModel& proto, float expected) {
+  auto* in = proto.add_tensor_entries();
+  in->set_id("v_f0");
+  in->mutable_dense()->set_name("f0");
+  in->mutable_dense()->mutable_type()->set_dtype(P::FLOAT32);
+  in->mutable_dense()->mutable_type()->add_shape(1);
+  in->mutable_dense()->mutable_float32_data()->add_values(1.0f);
+
+  auto* out = proto.add_tensor_entries();
+  out->set_id("v_score");
+  out->mutable_dense()->set_name("score");
+  out->mutable_dense()->mutable_type()->set_dtype(P::FLOAT32);
+  out->mutable_dense()->mutable_type()->add_shape(1);
+  out->mutable_dense()->mutable_float32_data()->add_values(expected);
+
+  auto* vc = proto.mutable_verification()->add_cases();
+  vc->add_inputs()->set_id("v_f0");
+  vc->add_expected_outputs()->set_id("v_score");
+}
+
+omle::rt::StatusOr<std::unique_ptr<Model>> load_proto(
+    const P::OMLEModel& proto) {
+  std::string bytes;
+  EXPECT_TRUE(proto.SerializeToString(&bytes));
+  return Model::load(bytes.data(), bytes.size());
+}
+
+}  // namespace
+
+TEST(FormatVersion, SupportedVersionLoadsWithoutWarnings) {
+  for (const char* v : {"0.1.0", "0.1.7", "0.1", ""}) {
+    P::OMLEModel proto;
+    if (*v) proto.mutable_metadata()->set_format_version(v);
+    add_version_stump(proto);
+    auto m = load_proto(proto);
+    ASSERT_TRUE(m.ok()) << v << ": " << m.status().message();
+    EXPECT_TRUE(m.value()->warnings().empty())
+        << "version " << v << " should not warn: "
+        << (m.value()->warnings().empty() ? "" : m.value()->warnings()[0]);
+  }
+}
+
+TEST(FormatVersion, PassingVerificationSilencesAVersionMismatch) {
+  // The model proves itself, so the declared version stops mattering.
+  for (const char* v : {"0.2.0", "1.0.0", "9.9.9"}) {
+    P::OMLEModel proto;
+    proto.mutable_metadata()->set_format_version(v);
+    add_version_stump(proto);
+    add_version_verification(proto, -1.0f);  // f0=1.0 ≥ 0.5 → right leaf
+    auto m = load_proto(proto);
+    ASSERT_TRUE(m.ok()) << v << ": " << m.status().message();
+    EXPECT_TRUE(m.value()->warnings().empty())
+        << "a verified model should load silently, but " << v << " warned";
+  }
+}
+
+TEST(FormatVersion, UnsupportedVersionWarnsWhenNothingProvesTheModel) {
+  for (const char* v : {"0.2.0", "0.0.9", "1.0.0", "2.1.0"}) {
+    P::OMLEModel proto;
+    proto.mutable_metadata()->set_format_version(v);
+    add_version_stump(proto);  // no verification cases
+    auto m = load_proto(proto);
+    ASSERT_TRUE(m.ok()) << v << " should load: " << m.status().message();
+    ASSERT_EQ(m.value()->warnings().size(), 1u)
+        << "expected one warning for " << v;
+    const std::string& w = m.value()->warnings()[0];
+    EXPECT_NE(w.find(v), std::string::npos)
+        << "warning should name the version: " << w;
+    EXPECT_NE(w.find("verification"), std::string::npos)
+        << "warning should say why the version had to be trusted: " << w;
+  }
+}
+
+TEST(FormatVersion, MalformedVersionWarnsRatherThanRefusing) {
+  for (const char* v : {"abc", "0.1.x", "0..1", "0.1.", ".1", "0.1.2.3"}) {
+    P::OMLEModel proto;
+    proto.mutable_metadata()->set_format_version(v);
+    add_version_stump(proto);
+    auto m = load_proto(proto);
+    ASSERT_TRUE(m.ok()) << v << " should load: " << m.status().message();
+    EXPECT_EQ(m.value()->warnings().size(), 1u)
+        << "expected a warning for '" << v << "'";
+  }
+}
+
+TEST(FormatVersion, FailingVerificationNamesTheVersionAsLikelyCause) {
+  P::OMLEModel proto;
+  proto.mutable_metadata()->set_format_version("0.2.0");
+  add_version_stump(proto);
+  add_version_verification(proto, 1.0f);  // wrong leaf on purpose
+
+  auto m = load_proto(proto);
+  ASSERT_FALSE(m.ok()) << "a failing verification case must still be fatal";
+  const std::string msg = m.status().message();
+  EXPECT_NE(msg.find("mismatch"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("0.2.0"), std::string::npos)
+      << "the version should be offered as the likely cause: " << msg;
+}
+
+TEST(FormatVersion,
+     FailingVerificationOnASupportedVersionKeepsThePlainMessage) {
+  P::OMLEModel proto;
+  proto.mutable_metadata()->set_format_version("0.1.0");
+  add_version_stump(proto);
+  add_version_verification(proto, 1.0f);  // wrong leaf
+
+  auto m = load_proto(proto);
+  ASSERT_FALSE(m.ok());
+  // No version to blame, so no speculation about one.
+  EXPECT_EQ(m.status().message().find("likely cause"), std::string::npos)
+      << m.status().message();
+}

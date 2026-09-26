@@ -15,6 +15,10 @@ struct LoadedModel {
   std::unique_ptr<ModelBase> executor;
   std::vector<InputSpec> inputs;
   std::vector<OutputSpec> outputs;
+  // Non-fatal advisories raised while loading, for the caller to surface.
+  // Collected rather than printed: this is a library, and an embedder cannot
+  // intercept, route or suppress a write to stderr.
+  std::vector<std::string> warnings;
 };
 
 // Parse a serialised OMLE protobuf from a file.

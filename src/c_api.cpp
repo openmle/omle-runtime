@@ -174,6 +174,19 @@ extern "C" int omle_model_num_inputs(const omle_model_t* model) {
   return model ? model->model->num_inputs() : 0;
 }
 
+extern "C" int omle_model_num_warnings(const omle_model_t* model) {
+  return model ? static_cast<int>(model->model->warnings().size()) : 0;
+}
+
+extern "C" const char* omle_model_warning(const omle_model_t* model,
+                                          int index) {
+  if (!model) return nullptr;
+  const auto& w = model->model->warnings();
+  if (index < 0 || static_cast<std::size_t>(index) >= w.size()) return nullptr;
+  // Points into the model's own storage, which outlives the call.
+  return w[static_cast<std::size_t>(index)].c_str();
+}
+
 extern "C" int omle_model_num_outputs(const omle_model_t* model) {
   return model ? model->model->num_outputs() : 0;
 }
