@@ -681,23 +681,35 @@ TEST(MultiNode, SessionRunsOperatorAndModelGraph) {
 // expected in float32: the relative error from narrowing 0.1 is ~1.5e-8, below
 // float32 resolution, so no amount of linear scaling survives the comparison.
 // StandardScaler subtracting float32(0.1) from 0.1 cancels the leading digits
-// instead, leaving exactly the quantization error as the output — 1.49e-9 when
+// instead, leaving exactly the quantization error as the output — ~1.5e-9 when
 // the input arrives as float64, and exactly 0.0 when it has been narrowed.
+//
+// The narrowing goes through a volatile float rather than a constexpr cast.
+// MSVC builds with /fp:fast (see the top-level CMakeLists), which permits
+// eliding an intermediate rounding to float; folded at compile time, the
+// quantization error becomes 0 and the premise of the test disappears — as a
+// static_assert firing, or worse as a test that passes for the wrong reason.
+// volatile forces the store to a float to actually happen.
+//
+// Tolerances leave three orders of magnitude of headroom for the same reason.
+// The signal is the difference between ~1.5e-9 and 0, so rtol=1e-3 still fails
+// the unfixed loader by a factor of ~1000 while tolerating any last-bit
+// difference /fp:fast and /arch:AVX2 introduce.
 //
 // Deliberately not a tree split: P::Tree stores thresholds as float32, so a
 // TreeEnsemble comparison narrows the feature by design, matching the source
 // framework. That would pin the kernel's semantics rather than the loader's
 // fidelity, which is what is at stake here.
 TEST(Float64Fidelity, VerificationInputKeepsFloat64) {
-  constexpr double kInput = 0.1;
-  // The float32 image of the input, as a double. Exactly representable in
-  // float32, so narrowing this constant is harmless — only the input matters.
-  constexpr double kMean = static_cast<double>(static_cast<float>(kInput));
-  constexpr double kExpected = kInput - kMean;  // ≈ -1.4901161193847656e-09
+  const double kInput = 0.1;
+  volatile float narrowed = static_cast<float>(kInput);
+  const double kMean = static_cast<double>(narrowed);
+  const double kExpected = kInput - kMean;  // ≈ -1.49e-09
 
-  static_assert(kExpected != 0.0,
-                "0.1 must not be representable in float32, or a narrowed "
-                "input would produce the same answer and prove nothing");
+  ASSERT_NE(kExpected, 0.0)
+      << "0.1 must not be representable in float32, or a narrowed input would "
+         "produce the same answer and prove nothing";
+  const double tol = std::fabs(kExpected) * 1e-3;
 
   P::OMLEModel proto;
   proto.add_inputs()->set_name("f0");
@@ -712,6 +724,8 @@ TEST(Float64Fidelity, VerificationInputKeepsFloat64) {
     t->mutable_type()->add_shape(1);
     t->mutable_float64_data()->add_values(v);
   };
+  // kMean is exactly representable in float32, so narrowing it is harmless —
+  // only the input entry's dtype decides the outcome.
   add_f64_entry("sc_mean", "sc_mean", kMean);
   add_f64_entry("sc_scale", "sc_scale", 1.0);
   add_f64_entry("verify_f0", "f0", kInput);
@@ -727,10 +741,9 @@ TEST(Float64Fidelity, VerificationInputKeepsFloat64) {
   auto* vc = proto.mutable_verification()->add_cases();
   vc->add_inputs()->set_id("verify_f0");
   vc->add_expected_outputs()->set_id("verify_y");
-  auto* tol = proto.mutable_verification()->mutable_tolerance();
-  // Tight enough that the 1.49e-9 gap is a failure rather than noise.
-  tol->mutable_atol()->set_float_value(1e-15);
-  tol->mutable_rtol()->set_float_value(1e-6);
+  auto* vtol = proto.mutable_verification()->mutable_tolerance();
+  vtol->mutable_atol()->set_float_value(0.0f);
+  vtol->mutable_rtol()->set_float_value(1e-3f);
 
   std::string bytes;
   ASSERT_TRUE(proto.SerializeToString(&bytes));
@@ -745,5 +758,5 @@ TEST(Float64Fidelity, VerificationInputKeepsFloat64) {
   x.f64_at(0, 0) = kInput;
   auto res = loaded.value()->predict({{"f0", std::move(x)}});
   ASSERT_TRUE(res.ok()) << res.status().message();
-  EXPECT_NEAR(res.value().begin()->second.get(0, 0), kExpected, 1e-15);
+  EXPECT_NEAR(res.value().begin()->second.get(0, 0), kExpected, tol);
 }
