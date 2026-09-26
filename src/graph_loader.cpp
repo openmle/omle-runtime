@@ -1822,6 +1822,23 @@ static TensorEntryMap build_tensor_entry_map(const P::OMLEModel& proto) {
         std::vector<std::string> sv(dt.string_data().values().begin(),
                                     dt.string_data().values().end());
         t = Tensor::strings(rows, cols, std::move(sv));
+      } else if (tensor_is_f64(dt)) {
+        // Keep float64 entries in float64. These tensors are fed to the graph
+        // as inputs by run_verification and run_warmup, and run_graph's
+        // per-name branch already preserves a Float64 input end to end — so
+        // narrowing here was the only thing standing between a recorded
+        // float64 value and the operators.
+        //
+        // It is the same failure the constant store guards against above, and
+        // it is not academic: a recorded fare of 26.55 becomes 26.549999237 in
+        // float32, which after a StandardScaler lands the row on the far side
+        // of a tree split and moves the predicted probability from 0.014964 to
+        // 0.009269. Verification then rejects a model whose expected outputs
+        // were correct, and only for those rows that sit near a threshold —
+        // which is why it looked like it depended on the sample.
+        std::vector<double> d64;
+        extract_doubles(dt, d64);
+        t = Tensor::from_doubles(rows, cols, std::move(d64));
       } else {
         std::vector<float> data;
         extract_floats(dt, data);
@@ -1833,10 +1850,9 @@ static TensorEntryMap build_tensor_entry_map(const P::OMLEModel& proto) {
       const auto& shape = sp.type().shape();
       int rows = shape.size() >= 1 ? static_cast<int>(shape[0]) : 0;
       int cols = shape.size() >= 2 ? static_cast<int>(shape[1]) : 0;
-      float fill =
-          sp.has_default_value()
-              ? static_cast<float>(scalar_val(sp.default_value()).as_double())
-              : 0.f;
+      double fill = sp.has_default_value()
+                        ? scalar_val(sp.default_value()).as_double()
+                        : 0.0;
       std::vector<float> values;
       std::vector<int32_t> indices;
       std::vector<int32_t> indptr;
@@ -1849,8 +1865,14 @@ static TensorEntryMap build_tensor_entry_map(const P::OMLEModel& proto) {
       } else {
         indptr.resize(rows + 1, 0);
       }
+      // Sparse float64 entries stay float32: extract_csr_floats has no float64
+      // counterpart, and sparse_csr would need the values as raw bytes of the
+      // declared dtype. Left as it was rather than half-converted, because no
+      // converter emits a sparse verification input today — if one starts to,
+      // this is the branch that needs the same treatment as the dense one.
       t = Tensor::sparse_csr_f32(rows, cols, std::move(values),
-                                 std::move(indices), std::move(indptr), fill);
+                                 std::move(indices), std::move(indptr),
+                                 static_cast<float>(fill));
     } else {
       continue;
     }
@@ -1977,6 +1999,21 @@ LoadedModel build_from_proto(const P::OMLEModel& proto) {
       }
       const std::string& ckey = t.name().empty() ? c.id() : t.name();
       cstore[ckey] = rt;
+
+      // The same full-precision twin convert_attributes() stores for the
+      // constants it materializes. Without it, a float64 parameter that reaches
+      // the graph through tensor_entries rather than through an inline
+      // attribute has no undegraded copy, and resolve_t64() in
+      // operator_registry.cpp quietly falls back to the float32 narrowing —
+      // the kernels that ask for the twin are exactly the ones for which that
+      // rounding is what they were trying to avoid.
+      if (t.type().dtype() == P::FLOAT64) {
+        std::vector<double> d64;
+        extract_doubles(t, d64);
+        cstore[ckey + kF64Suffix] = std::make_shared<Tensor>(
+            Tensor::from_doubles(static_cast<int>(rows), static_cast<int>(cols),
+                                 std::move(d64)));
+      }
     } else if (c.has_sparse()) {
       const P::SparseTensor& sp = c.sparse();
       if (c.id().empty()) continue;

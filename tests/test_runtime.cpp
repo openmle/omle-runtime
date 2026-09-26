@@ -668,3 +668,82 @@ TEST(MultiNode, SessionRunsOperatorAndModelGraph) {
   for (int i = 0; i < 4; ++i)
     EXPECT_FLOAT_EQ(result.row(i)[0], expected[i]) << "row " << i;
 }
+
+// ---- Float64 verification inputs keep their precision -------------------
+//
+// build_tensor_entry_map() used to materialize every numeric tensor entry with
+// extract_floats()/from_floats(), whatever dtype it declared. Verification and
+// warmup feed those entries to the graph as inputs, so a recorded FLOAT64 value
+// was narrowed to float32 before the first operator ran — even though
+// run_graph()'s per-name branch takes care to preserve a Float64 input.
+//
+// Exposing that needs care, because run_verification() compares actual against
+// expected in float32: the relative error from narrowing 0.1 is ~1.5e-8, below
+// float32 resolution, so no amount of linear scaling survives the comparison.
+// StandardScaler subtracting float32(0.1) from 0.1 cancels the leading digits
+// instead, leaving exactly the quantization error as the output — 1.49e-9 when
+// the input arrives as float64, and exactly 0.0 when it has been narrowed.
+//
+// Deliberately not a tree split: P::Tree stores thresholds as float32, so a
+// TreeEnsemble comparison narrows the feature by design, matching the source
+// framework. That would pin the kernel's semantics rather than the loader's
+// fidelity, which is what is at stake here.
+TEST(Float64Fidelity, VerificationInputKeepsFloat64) {
+  constexpr double kInput = 0.1;
+  // The float32 image of the input, as a double. Exactly representable in
+  // float32, so narrowing this constant is harmless — only the input matters.
+  constexpr double kMean = static_cast<double>(static_cast<float>(kInput));
+  constexpr double kExpected = kInput - kMean;  // ≈ -1.4901161193847656e-09
+
+  static_assert(kExpected != 0.0,
+                "0.1 must not be representable in float32, or a narrowed "
+                "input would produce the same answer and prove nothing");
+
+  P::OMLEModel proto;
+  proto.add_inputs()->set_name("f0");
+  proto.add_outputs()->set_name("y");
+
+  auto add_f64_entry = [&proto](const char* id, const char* name, double v) {
+    auto* e = proto.add_tensor_entries();
+    e->set_id(id);
+    auto* t = e->mutable_dense();
+    t->set_name(name);
+    t->mutable_type()->set_dtype(P::FLOAT64);
+    t->mutable_type()->add_shape(1);
+    t->mutable_float64_data()->add_values(v);
+  };
+  add_f64_entry("sc_mean", "sc_mean", kMean);
+  add_f64_entry("sc_scale", "sc_scale", 1.0);
+  add_f64_entry("verify_f0", "f0", kInput);
+  add_f64_entry("verify_y", "y", kExpected);
+
+  auto* node =
+      add_op_node(proto, "omle.feature", "StandardScaler", {"f0"}, {"y"});
+  node->add_attributes()->set_name("mean");
+  node->mutable_attributes(0)->mutable_tensor_ref()->set_id("sc_mean");
+  node->add_attributes()->set_name("scale");
+  node->mutable_attributes(1)->mutable_tensor_ref()->set_id("sc_scale");
+
+  auto* vc = proto.mutable_verification()->add_cases();
+  vc->add_inputs()->set_id("verify_f0");
+  vc->add_expected_outputs()->set_id("verify_y");
+  auto* tol = proto.mutable_verification()->mutable_tolerance();
+  // Tight enough that the 1.49e-9 gap is a failure rather than noise.
+  tol->mutable_atol()->set_float_value(1e-15);
+  tol->mutable_rtol()->set_float_value(1e-6);
+
+  std::string bytes;
+  ASSERT_TRUE(proto.SerializeToString(&bytes));
+
+  // Loading runs the verification case; a narrowed entry makes this throw.
+  auto loaded = Model::load(bytes.data(), bytes.size());
+  ASSERT_TRUE(loaded.ok()) << loaded.status().message();
+
+  // The same value through the public API, so the recorded path and the caller
+  // path cannot drift apart again without one of these assertions failing.
+  Tensor x = Tensor::dense(DataType::Float64, 1, 1);
+  x.f64_at(0, 0) = kInput;
+  auto res = loaded.value()->predict({{"f0", std::move(x)}});
+  ASSERT_TRUE(res.ok()) << res.status().message();
+  EXPECT_NEAR(res.value().begin()->second.get(0, 0), kExpected, 1e-15);
+}
