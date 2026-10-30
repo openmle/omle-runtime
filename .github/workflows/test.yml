@@ -1,0 +1,498 @@
+name: Tests
+
+# Everything here is downstream of the C++ runtime, so every job builds it
+# first. The dependency chain is:
+#
+#   C++ (libomleruntime — one shared library, C++ API + C ABI)
+#     ├── omle_runtime   (Python, scikit-build-core)
+#     └── Java          (JNA → libomleruntime)     → omle-runtime.jar
+#
+# The Scala transformer and its PySpark wrapper used to hang off the Java jar
+# here. They live in the openmle/omle-spark repository now and consume
+# omle-runtime from Maven Central, so nothing in this file builds them.
+#
+# The proto lives in the sibling `omle` repository, and CMake reads it at
+# ../omle/protobuf/omle.proto, so every job checks that repo out alongside this
+# one. `path:` keeps the two as siblings inside the workspace.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+defaults:
+  run:
+    working-directory: omle-runtime
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 0. Portability lint — seconds, and it fails before the Windows matrix has
+  #    finished installing a toolchain. MSVC rejects several GNU-only spellings
+  #    (__restrict__, __builtin_*) that GCC and Clang accept silently, so
+  #    without this the only signal is a red Windows build ten minutes in.
+  # ---------------------------------------------------------------------------
+  portability:
+    name: Portability lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - run: python3 scripts/check_portability.py .
+
+  # ---------------------------------------------------------------------------
+  # 0b. Style — runs .pre-commit-config.yaml, the same file the local git hook
+  #     runs, so the two cannot drift. --all-files because a locally installed
+  #     hook only ever sees staged files, and nothing guarantees a contributor
+  #     installed it at all.
+  #
+  #     clang-format is the one that matters here: without a .clang-format in
+  #     the repo it silently falls back to LLVM style and rewrites every C++
+  #     file, so this job is also what keeps that config present and correct.
+  #     No CMake and no sibling omle checkout — nothing here compiles.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Cache pre-commit environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          # Checked out under omle-runtime/, so the glob needs that prefix —
+          # hashFiles resolves against the workspace root, not working-directory.
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('omle-runtime/.pre-commit-config.yaml') }}
+      - run: pip install pre-commit
+      # --show-diff-on-failure prints the patch the autofixing hooks would have
+      # applied, so a red build hands back the fix instead of just a rule name.
+      - run: pre-commit run --all-files --show-diff-on-failure
+
+  # ---------------------------------------------------------------------------
+  # 1. C++ — the runtime itself, on all three platforms.
+  # ---------------------------------------------------------------------------
+  cpp:
+    name: C++ (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      # CMakeLists requires Python3 Development.Module even for a pure C++
+      # build, so a Python is always needed.
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install protobuf and GoogleTest (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev libgtest-dev libabsl-dev
+
+      - name: Install protobuf and GoogleTest (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf googletest abseil
+
+      - name: Install protobuf and GoogleTest (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # conda-forge publishes prebuilt Windows binaries, so nothing is
+        # compiled here. vcpkg built protobuf and Abseil from source on every
+        # run, which dominated the job; these are downloads.
+        #
+        # The packages ship a release-only CMake config
+        # (protobuf-targets-release.cmake), protoc.exe, the import libraries and
+        # the headers. libabseil is separate because libprotobuf does not vendor
+        # it. Conda lays C libraries out under <prefix>/Library on Windows,
+        # which is what CMAKE_PREFIX_PATH has to point at.
+        run: |
+          "$CONDA/Scripts/conda" create --yes --quiet \
+            --prefix "${{ github.workspace }}/conda-deps" \
+            -c conda-forge libprotobuf libabseil gtest
+
+          # vcpkg copied dependent DLLs next to each binary automatically; conda
+          # does not. libprotobuf.dll and the Abseil DLLs have to be findable at
+          # run time by ctest, by the Python extension and by JNA, so put the
+          # conda bin directory on PATH for every later step in this job.
+          echo "${{ github.workspace }}/conda-deps/Library/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        shell: bash
+        run: |
+          # Release targets an explicit AVX2+FMA baseline on x86 rather than
+          # -march=native, so what CI exercises is what a published wheel runs.
+          EXTRA=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA="-DCMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/conda-deps/Library"
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON $EXTRA
+
+      - name: Build
+        run: cmake --build build --config Release -j 4
+
+      - name: Test
+        working-directory: omle-runtime/build
+        run: ctest --output-on-failure --build-config Release
+
+  # ---------------------------------------------------------------------------
+  # 2. Python — omle_runtime. Built from source by scikit-build-core, so it
+  #    needs the same native toolchain as the C++ job.
+  # ---------------------------------------------------------------------------
+  python:
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Oldest and newest supported; the interpreters in between are covered
+        # by the pure-Python repositories. Keep the upper bound in step with the
+        # omle package and with the cp3xx list in python/pyproject.toml.
+        python-version: ["3.10", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install protobuf (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev libabsl-dev
+
+      - name: Install protobuf (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf abseil
+
+      - name: Install protobuf (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # conda-forge publishes prebuilt Windows binaries, so nothing is
+        # compiled here. vcpkg built protobuf and Abseil from source on every
+        # run, which dominated the job; these are downloads.
+        #
+        # The packages ship a release-only CMake config
+        # (protobuf-targets-release.cmake), protoc.exe, the import libraries and
+        # the headers. libabseil is separate because libprotobuf does not vendor
+        # it. Conda lays C libraries out under <prefix>/Library on Windows,
+        # which is what CMAKE_PREFIX_PATH has to point at.
+        run: |
+          "$CONDA/Scripts/conda" create --yes --quiet \
+            --prefix "${{ github.workspace }}/conda-deps" \
+            -c conda-forge libprotobuf libabseil
+
+          # vcpkg copied dependent DLLs next to each binary automatically; conda
+          # does not. libprotobuf.dll and the Abseil DLLs have to be findable at
+          # run time by ctest, by the Python extension and by JNA, so put the
+          # conda bin directory on PATH for every later step in this job.
+          #
+          # PATH alone is enough for the executables ctest runs, but not for the
+          # Python extension: since 3.8 CPython resolves an extension module's
+          # dependent DLLs without consulting PATH. omle_runtime/__init__.py
+          # re-registers these entries with os.add_dll_directory() before
+          # importing omle_ext, which is what makes this line work there.
+          echo "${{ github.workspace }}/conda-deps/Library/bin" >> "$GITHUB_PATH"
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy pybind11
+          # The sibling omle package supplies the IR the fixtures are built
+          # with; install it from the checkout rather than PyPI so the proto and
+          # the runtime always agree.
+          pip install ../omle
+
+      - name: Build the extension in place
+        shell: bash
+        # tests/conftest.py puts python/ first on sys.path, so the suite imports
+        # the source tree rather than an installed wheel. BUILD_PYTHON drops
+        # omle_ext and libomleruntime straight into python/omle_runtime/, which is
+        # what that import needs.
+        run: |
+          EXTRA=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA="-DCMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/conda-deps/Library"
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_PYTHON=ON -DBUILD_TESTS=OFF \
+            -Dpybind11_DIR="$(python -c 'import pybind11; print(pybind11.get_cmake_dir())')" \
+            -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" $EXTRA
+          cmake --build build --config Release --target omle_ext -j 4
+
+      - name: Check the native library landed where consumers look
+        shell: bash
+        # Both the Python package and JNA load the library from
+        # python/omle_runtime/ by that exact literal path, and nothing in the
+        # build enforces it. When a multi-config generator last slipped a
+        # per-config subdirectory in between, the build stayed green and the
+        # failure surfaced two steps later as a 200-line UnsatisfiedLinkError
+        # listing the JVM's whole resource path. One line here instead.
+        run: |
+          case "$RUNNER_OS" in
+            Windows) LIB=omleruntime.dll ;;
+            macOS)   LIB=libomleruntime.dylib ;;
+            *)       LIB=libomleruntime.so ;;
+          esac
+          if [ ! -f "python/omle_runtime/$LIB" ]; then
+            echo "::error::python/omle_runtime/$LIB is missing. Built artifacts:"
+            find python/omle_runtime -name '*omleruntime*' -o -name 'omle_ext*'
+            exit 1
+          fi
+          # The .pyd/.so name is interpreter- and platform-specific, so match
+          # the prefix that `from omle_runtime import omle_ext` resolves.
+          if ! ls python/omle_runtime/omle_ext* >/dev/null 2>&1; then
+            echo "::error::no omle_ext extension module in python/omle_runtime/"
+            find python/omle_runtime -name 'omle_ext*'
+            exit 1
+          fi
+
+      - name: Test
+        working-directory: omle-runtime/python
+        # test_ensemble_tree.py importorskips omle_convert, so the cross-repo
+        # comparisons against xgboost/lightgbm/catboost skip here by design.
+        run: pytest tests -q
+
+      - name: Check the wheel builds and imports
+        shell: bash
+        # scikit-build-core runs its own CMake configure in an isolated build
+        # directory, so the -DCMAKE_PREFIX_PATH given to the in-place build
+        # above does not carry over and cmake.args in pyproject.toml cannot
+        # hardcode a runner path. On Linux and macOS protobuf sits in a default
+        # search path so find_package succeeds regardless; on Windows it exists
+        # only in the conda prefix and has to be pointed at again.
+        #
+        # This has to be SKBUILD_CMAKE_DEFINE, not SKBUILD_CMAKE_ARGS. Each
+        # env var *replaces* the pyproject.toml key it maps to rather than
+        # adding to it, and cmake.args already carries BUILD_PYTHON=ON and
+        # BUILD_TESTS=OFF — overriding it silently dropped both, which turned
+        # into a GTest configure error from the tests/ subdirectory that
+        # BUILD_TESTS=OFF was there to skip. cmake.define is a separate key,
+        # so setting it leaves cmake.args intact. pip forwards the environment
+        # into the isolated build.
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            export SKBUILD_CMAKE_DEFINE="CMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/conda-deps/Library"
+          fi
+          pip install ./python
+          # Run from elsewhere so the source tree cannot satisfy the import.
+          cd "$RUNNER_TEMP" && python -c "import omle_runtime; print('wheel ok')"
+
+  # ---------------------------------------------------------------------------
+  # 3. Java — io.github.openmle.runtime. JNA loads libomleruntime at run time, so
+  #    native library is built per platform and handed to the JVM explicitly.
+  # ---------------------------------------------------------------------------
+  java:
+    name: Java (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Install protobuf (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libprotobuf-dev libabsl-dev
+
+      - name: Install protobuf (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf abseil
+
+      - name: Install protobuf (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        # conda-forge publishes prebuilt Windows binaries, so nothing is
+        # compiled here. vcpkg built protobuf and Abseil from source on every
+        # run, which dominated the job; these are downloads.
+        #
+        # The packages ship a release-only CMake config
+        # (protobuf-targets-release.cmake), protoc.exe, the import libraries and
+        # the headers. libabseil is separate because libprotobuf does not vendor
+        # it. Conda lays C libraries out under <prefix>/Library on Windows,
+        # which is what CMAKE_PREFIX_PATH has to point at.
+        run: |
+          "$CONDA/Scripts/conda" create --yes --quiet \
+            --prefix "${{ github.workspace }}/conda-deps" \
+            -c conda-forge libprotobuf libabseil
+
+          # vcpkg copied dependent DLLs next to each binary automatically; conda
+          # does not. libprotobuf.dll and the Abseil DLLs have to be findable at
+          # run time by ctest, by the Python extension and by JNA, so put the
+          # conda bin directory on PATH for every later step in this job.
+          echo "${{ github.workspace }}/conda-deps/Library/bin" >> "$GITHUB_PATH"
+
+      - name: Build the shared runtime library
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA="-DCMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/conda-deps/Library"
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF $EXTRA
+          cmake --build build --config Release --target omle_runtime -j 4
+
+      - name: Check the native library landed where consumers look
+        shell: bash
+        # Both the Python package and JNA load the library from
+        # python/omle_runtime/ by that exact literal path, and nothing in the
+        # build enforces it. When a multi-config generator last slipped a
+        # per-config subdirectory in between, the build stayed green and the
+        # failure surfaced two steps later as a 200-line UnsatisfiedLinkError
+        # listing the JVM's whole resource path. One line here instead.
+        run: |
+          case "$RUNNER_OS" in
+            Windows) LIB=omleruntime.dll ;;
+            macOS)   LIB=libomleruntime.dylib ;;
+            *)       LIB=libomleruntime.so ;;
+          esac
+          if [ ! -f "python/omle_runtime/$LIB" ]; then
+            echo "::error::python/omle_runtime/$LIB is missing. Built artifacts:"
+            find python/omle_runtime -name '*omleruntime*' -o -name 'omle_ext*'
+            exit 1
+          fi
+
+      - name: Test
+        working-directory: omle-runtime/java
+        shell: bash
+        # The build drops the library next to the Python package; that
+        # directory is what JNA has to search.
+        run: mvn -B test -Djna.library.path="$GITHUB_WORKSPACE/omle-runtime/python/omle_runtime"
+
+  # ---------------------------------------------------------------------------
+  # 3b. Self-contained build — OMLE_BUNDLE_DEPS.
+  #
+  #     A distributable artifact (a wheel, or a JNA fat jar) has to load on a
+  #     machine that never installed protobuf. A normal build does not: protobuf
+  #     >= 22 pulls Abseil, so libomleruntime ends up with ~57 extra shared
+  #     objects recorded by absolute path. OMLE_BUNDLE_DEPS builds both from
+  #     pinned source as static archives and folds them in.
+  #
+  #     This job deliberately installs no protobuf at all. That is half the
+  #     test: if the vendored build ever silently fell back to a system
+  #     protobuf, there would be nothing here to fall back to.
+  # ---------------------------------------------------------------------------
+  bundled:
+    name: Self-contained (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+      - uses: actions/checkout@v4.2.2
+        with:
+          repository: openmle/omle
+          path: omle
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build with vendored static protobuf and Abseil
+        shell: bash
+        # Builds protobuf, protoc and Abseil from source, so it is slower than
+        # the other jobs by several minutes.
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF \
+            -DOMLE_BUNDLE_DEPS=ON
+          cmake --build build --config Release --target omle_runtime -j 4
+
+      - name: Assert nothing external is linked
+        shell: bash
+        # The whole point of the option is this number being zero. Checked with
+        # the platform's own tool where there is one; Windows has no ldd/otool
+        # without a developer shell, so there it is covered by the load test
+        # below plus the absence of any protobuf on the runner.
+        run: |
+          case "$RUNNER_OS" in
+            Linux)
+              LIB=python/omle_runtime/libomleruntime.so
+              ldd "$LIB" || true
+              LEAKED=$(ldd "$LIB" | grep -ciE 'protobuf|absl' || true)
+              ;;
+            macOS)
+              LIB=python/omle_runtime/libomleruntime.dylib
+              otool -L "$LIB" || true
+              LEAKED=$(otool -L "$LIB" | grep -ciE 'protobuf|absl' || true)
+              ;;
+            *)
+              LIB=python/omle_runtime/omleruntime.dll
+              LEAKED=0
+              ;;
+          esac
+          test -f "$LIB" || { echo "::error::$LIB was not built"; exit 1; }
+          if [ "$LEAKED" -ne 0 ]; then
+            echo "::error::$LIB still links $LEAKED protobuf/abseil libraries;"
+            echo "the vendored build fell back to a system copy."
+            exit 1
+          fi
+          echo "$LIB links no protobuf/abseil shared libraries"
+
+      - name: Load it with no dependency directories in scope
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        # Loading from outside the build tree, with nothing added to PATH,
+        # is what a user on a clean machine does. On Windows this is the
+        # primary check: since 3.8 CPython resolves a DLL's dependencies
+        # without consulting PATH, so a library that still needed
+        # libprotobuf.dll could not load here.
+        run: |
+          python -c "
+          import ctypes, os, sys
+          lib = os.path.join(r'${{ github.workspace }}', 'omle-runtime', 'python', 'omle_runtime',
+                             {'win32': 'omleruntime.dll'}.get(sys.platform,
+                             'libomleruntime.dylib' if sys.platform == 'darwin' else 'libomleruntime.so'))
+          ctypes.CDLL(lib)
+          print('loaded standalone:', lib)
+          "
+
+  # ---------------------------------------------------------------------------

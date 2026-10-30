@@ -1,0 +1,46 @@
+# Dependencies for the latency benchmark (train_models.py, run_benchmark.py).
+#
+#   python -m pip install -r benchmark/requirements.txt
+#
+# Every one of these is needed for the full comparison matrix. The scripts
+# degrade rather than fail when one is missing — a missing onnxruntime prints
+# "[warning] onnxruntime not found — ORT path skipped" and carries on — so an
+# incomplete install shows up as a silently absent column rather than an error.
+
+# --- model training -------------------------------------------------------
+scikit-learn        # datasets, pipelines, train/test split
+xgboost             # xgb-sklearn and xgb-booster paths
+lightgbm            # lgb-sklearn and lgb-booster paths
+joblib              # persists the fitted sklearn pipeline for the adult task
+pandas              # the adult task is a mixed-type DataFrame
+numpy
+
+# --- ONNX Runtime comparison ----------------------------------------------
+# onnxruntime executes the models; the two converters produce the .onnx files
+# it reads. Without the converters there is no model to load, so the ORT column
+# is skipped even when onnxruntime itself is installed.
+onnxruntime         # the ort-session path
+onnxmltools         # XGBoost and LightGBM  -> .onnx
+skl2onnx            # the adult sklearn pipeline -> .onnx
+
+# --- measurement ----------------------------------------------------------
+psutil              # RSS deltas per engine in the memory report
+
+# --- the OMLE IR and converters -------------------------------------------
+# From PyPI, so the benchmark is reproducible without checking out the sibling
+# repositories. omle supplies the IR; omle-convert turns the trained XGBoost and
+# LightGBM models into .omle files.
+#
+# omle-convert currently has only a pre-release on PyPI (0.1.0rc1). No --pre
+# flag is needed: pip falls back to a pre-release when a package has no stable
+# version at all. Once a stable 0.1.0 ships, this picks it up automatically.
+omle
+omle-convert
+
+# --- the runtime under test -----------------------------------------------
+# omle_runtime is NOT on PyPI yet, so it is built from this repository:
+#
+#   pip install ../python
+#
+# Building it needs the native toolchain; see the top-level README. Once the
+# wheels are published this becomes an ordinary entry in this file.

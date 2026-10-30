@@ -1,0 +1,152 @@
+name: Release artifacts
+
+# Builds the redistributable Java jar: one jar carrying the native runtime for
+# every supported platform, so a consumer adds a single dependency and needs
+# neither a native toolchain nor -Djna.library.path.
+#
+# Two stages, because no single runner can produce all five libraries:
+#
+#   native (5 runners, one per platform)
+#     └── each builds libomleruntime with OMLE_BUNDLE_DEPS=ON and uploads it
+#           └── jar (one runner)
+#                 downloads all five, lays them out where JNA looks, packages
+#
+# OMLE_BUNDLE_DEPS is what makes this worth shipping. Without it the library
+# records absolute paths to protobuf and ~57 Abseil shared objects, so it would
+# only load on a machine that happens to have those packages in those places.
+#
+# The layout is JNA's own: Native.load() falls back to searching the classpath
+# for <Platform.RESOURCE_PREFIX>/<libname> and extracts what it finds, so no
+# loader code is needed on our side and LibHolder is untouched. The prefixes
+# below are the exact strings JNA uses -- they are the directory names in its
+# own jar, where it ships libjnidispatch the same way.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+defaults:
+  run:
+    working-directory: omle-runtime
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. One self-contained native library per platform.
+  # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # 1. The fat jar itself, built by the shared workflow so that this path and
+  #    consumers get the same binary that this workflow verified.
+  # ---------------------------------------------------------------------------
+  build-jar:
+    uses: ./.github/workflows/build-jar.yml
+
+  # ---------------------------------------------------------------------------
+  # 2. Deploy it to Maven Central. Only on a tag: a manual run builds and
+  #    uploads the artifact for inspection but must not release anything.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy omle-runtime to Maven Central
+    needs: build-jar
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          path: omle-runtime
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      # The staged native libraries, NOT the assembled jar. `mvn deploy` runs
+      # the full lifecycle, so its package phase rebuilds
+      # target/omle-runtime-<version>.jar from src/main/java and overwrites
+      # anything already there — a downloaded fat jar would be destroyed before
+      # it could be published, which is how 0.1.0-rc8 reached Central as a
+      # 21 KB classes-only jar.
+      #
+      # Unpacked into src/main/resources instead, Maven packages them itself and
+      # the jar it deploys IS the fat jar.
+      - uses: actions/download-artifact@v4
+        with:
+          name: omle-runtime-natives
+          path: omle-runtime/java/src/main/resources
+
+      - name: Verify the natives are staged before packaging
+        working-directory: omle-runtime/java
+        shell: bash
+        # Checked here as well as in build-jar.yml: this is the last point
+        # before an artifact becomes permanent on Central, and a release that
+        # silently drops a platform cannot be withdrawn.
+        run: |
+          MISSING=""
+          for prefix in linux-x86-64 linux-aarch64 darwin-aarch64 win32-x86-64; do
+            ls "src/main/resources/$prefix"/* >/dev/null 2>&1 || MISSING="$MISSING $prefix"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::no native library staged for:$MISSING — refusing to"
+            echo "publish a jar that would fail with UnsatisfiedLinkError there."
+            exit 1
+          fi
+          find src/main/resources -type f | sed 's/^/  /'
+
+      # -----------------------------------------------------------------------
+      # Publish to Maven Central. Only on a tag: a manual run builds and
+      # uploads the artifact for inspection but must not release anything.
+      # -----------------------------------------------------------------------
+      - name: Import the signing key
+        shell: bash
+        # Central requires every artifact to carry a detached GPG signature.
+        # The secret is the armoured private key; --batch keeps gpg from trying
+        # to open a tty that does not exist on a runner.
+        run: |
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format=long
+
+      - name: Deploy omle-runtime to Maven Central
+        working-directory: omle-runtime/java
+        shell: bash
+        # -Prelease adds the sources, javadoc, gpg and central-publishing
+        # plugins. The server id `central` matches publishingServerId in the
+        # pom; the token is the Central Portal user token, not an account
+        # password.
+        env:
+          MAVEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<'XML'
+          <settings>
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${env.MAVEN_USERNAME}</username>
+                <password>${env.MAVEN_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          XML
+          mvn -B deploy -Prelease -DskipTests \
+            -Drevision="${{ needs.build-jar.outputs.version }}"
+
+      - name: Confirm what was published carries the natives
+        working-directory: omle-runtime/java
+        shell: bash
+        # The jar Maven just deployed is still in target/. Reading it back is
+        # the only check that the resources actually made it in, rather than
+        # being staged and then missed by the build.
+        run: |
+          JAR=$(ls target/omle-runtime-*.jar | grep -vE '\-(sources|javadoc)\.jar$' | head -1)
+          echo "$JAR  ($(du -h "$JAR" | cut -f1))"
+          N=$(unzip -l "$JAR" | grep -cE 'linux-x86-64|linux-aarch64|darwin-aarch64|win32-x86-64')
+          unzip -l "$JAR" | grep -E '\.so|\.dylib|\.dll' | sed 's/^/  /'
+          if [ "$N" -eq 0 ]; then
+            echo "::error::the deployed jar contains no native libraries"
+            exit 1
+          fi
