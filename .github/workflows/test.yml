@@ -215,9 +215,10 @@ jobs:
           # PATH alone is enough for the executables ctest runs, but not for the
           # Python extension: since 3.8 CPython resolves an extension module's
           # dependent DLLs without consulting PATH. omle_runtime/__init__.py
-          # re-registers these entries with os.add_dll_directory() before
-          # importing omle_ext, which is what makes this line work there.
+          # registers OMLE_RUNTIME_DLL_PATH with os.add_dll_directory() before
+          # importing omle_ext, so point that at the conda bin directory too.
           echo "${{ github.workspace }}/conda-deps/Library/bin" >> "$GITHUB_PATH"
+          echo "OMLE_RUNTIME_DLL_PATH=${{ github.workspace }}/conda-deps/Library/bin" >> "$GITHUB_ENV"
 
       - name: Install test dependencies
         shell: bash

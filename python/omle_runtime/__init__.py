@@ -54,8 +54,13 @@ import numpy as np
 # against the system directories, the directory holding the .pyd, and whatever
 # os.add_dll_directory() has registered — PATH is deliberately not consulted.
 # omleruntime.dll sits next to the .pyd so it resolves on its own, but protobuf
-# and Abseil usually live in a conda or vcpkg prefix that is only on PATH, and
-# without this the import fails with a bare "DLL load failed".
+# and Abseil usually live in a conda or vcpkg prefix, and without this the
+# import fails with a bare "DLL load failed".
+#
+# Only OMLE_RUNTIME_DLL_PATH is registered, not PATH. Registered directories
+# are searched before System32 and in no specified order, so registering all
+# of PATH let another tool's copy of a DLL shadow the intended one and the
+# import failed with "The specified procedure could not be found".
 #
 # The cookies returned by add_dll_directory() unregister the directory when
 # closed, so they are parked in a module-level list to keep them alive.
@@ -63,10 +68,7 @@ _dll_directories = []
 
 if sys.platform == "win32":
     _candidates = [os.path.dirname(os.path.abspath(__file__))]
-    # An explicit override comes first; it is the only knob available when the
-    # dependencies live somewhere PATH does not mention.
     _candidates += os.environ.get("OMLE_RUNTIME_DLL_PATH", "").split(os.pathsep)
-    _candidates += os.environ.get("PATH", "").split(os.pathsep)
 
     _seen = set()
     for _d in _candidates:
