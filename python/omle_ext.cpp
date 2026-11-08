@@ -72,7 +72,9 @@ static void build_col_arrays(const py::list& col_data_py,
         // avoids the tolist() → Python list allocation path
         int nr = (int)arr.size();
         str_bufs[c].resize(nr);
-        auto** raw = reinterpret_cast<PyObject**>(arr.mutable_data());
+        // Read-only access: pandas 3 (Copy-on-Write) hands out read-only
+        // views, and mutable_data() would throw "array is not writeable".
+        auto* const* raw = reinterpret_cast<PyObject* const*>(arr.data());
         for (int r = 0; r < nr; ++r) {
           PyObject* s = raw[r];
           const char* p =
