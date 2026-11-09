@@ -1,6 +1,7 @@
 #ifndef OMLE_AST_TYPES_H_
 #define OMLE_AST_TYPES_H_
 
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>

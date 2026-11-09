@@ -527,3 +527,13 @@ class TestMixedDataFrame:
             df = pd.DataFrame({"age": [0.0], "category": [cat]})
             out = s.predict(df)
             np.testing.assert_allclose(out, [expected], rtol=1e-5)
+
+    def test_object_dtype_column_read_only(self, mixed_model):
+        # pandas 3 (Copy-on-Write) hands out a read-only view for an
+        # object-dtype column; the extension must not ask for write access.
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame({"age": [25.0, 40.0, 55.0],
+                           "category": pd.Series(["low", "high", "med"], dtype=object)})
+        np.testing.assert_allclose(mixed_model.predict(df), [0.0, 2.0, 1.0], rtol=1e-5)
+        s = mixed_model.create_session()
+        np.testing.assert_allclose(s.predict(df), [0.0, 2.0, 1.0], rtol=1e-5)
